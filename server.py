@@ -192,7 +192,6 @@ def webhook():
         return Response(str(twiml_response), content_type='text/xml')
     else:
         return "Mensaje no encontrado en el request", 400
-
 # Ruta para el endpoint raíz
 @app.route('/')
 def index():
