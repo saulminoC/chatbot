@@ -3,3 +3,4 @@ openai
 python-dotenv
 dateparser
 twilio
+gunicorn==21.2.0 
