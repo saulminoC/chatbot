@@ -85,11 +85,17 @@ def extraer_fecha_hora(mensaje):
     except Exception as e:
         print(f"Error al extraer fecha y hora con OpenAI: {e}")
         return None
+
 def procesar_cita(mensaje, from_number):
     """
     Procesa una solicitud de cita y la guarda en Google Calendar.
     """
     global estado_conversacion
+
+    # Verificar si ya tenemos el nombre del cliente
+    if "nombre" not in estado_conversacion[from_number]:
+        estado_conversacion[from_number]["nombre"] = mensaje
+        return "¡Gracias! Ahora, ¿podrías decirme para qué día y hora te gustaría agendar tu cita?\nRecuerda que estamos disponibles " + HORARIO_ATENCION + "."
 
     # Intentar extraer la fecha y hora usando OpenAI
     fecha = extraer_fecha_hora(mensaje)
@@ -103,8 +109,8 @@ def procesar_cita(mensaje, from_number):
             # Crear el evento en Google Calendar
             service = get_calendar_service()
             event = {
-                'summary': 'Cita agendada',
-                'description': 'Cita agendada a través del chatbot.',
+                'summary': f"Cita agendada para {estado_conversacion[from_number]['nombre']}",
+                'description': f"Cita agendada a través del chatbot para {estado_conversacion[from_number]['nombre']}.",
                 'start': {
                     'dateTime': fecha.isoformat(),
                     'timeZone': 'America/Mexico_City',  # Ajusta la zona horaria
@@ -159,17 +165,20 @@ def webhook():
         # Respuesta inicial del bot
         if any(palabra in mensaje_lower for palabra in ["hola", "buenos días", "buenas tardes", "buenas noches"]):
             respuesta = f"¡Hola! Soy de la barbería d' Leo. ¿En qué puedo ayudarte hoy? Puedes preguntar sobre nuestros servicios, precios, promociones, productos disponibles en la sucursal, o incluso agendar una cita.\n\nNuestro horario de atención es {HORARIO_ATENCION}."
-        elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué servicios", "qué ofrecen", "cuáles son sus servicios"]):
+        elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué servicios", "qué ofrecen", "cuáles son tus servicios"]):
             respuesta = listar_servicios()
         elif "cita" in mensaje_lower or "agendar" in mensaje_lower:
-            estado_conversacion[from_number] = "agendando_cita"
-            respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme para qué día y hora te gustaría agendarla?\nRecuerda que estamos disponibles " + HORARIO_ATENCION + "."
-        elif from_number in estado_conversacion and estado_conversacion[from_number] == "agendando_cita":
+            estado_conversacion[from_number] = {"estado": "preguntando_nombre"}
+            respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme tu nombre?"
+        elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "preguntando_nombre":
+            estado_conversacion[from_number]["estado"] = "agendando_cita"
+            respuesta = procesar_cita(mensaje, from_number)
+        elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "agendando_cita":
             respuesta = procesar_cita(mensaje, from_number)
         elif "tratamiento capilar" in mensaje_lower:
-            estado_conversacion[from_number] = "tratamiento_capilar"
+            estado_conversacion[from_number] = {"estado": "tratamiento_capilar"}
             respuesta = "¡Claro! ¿Qué tipo de tratamiento capilar estás buscando? Hay diferentes opciones como hidratación profunda, reparación de daños, control de frizz, crecimiento del cabello, entre otros. ¿Tienes alguna preferencia en particular o algún problema específico que quieras abordar con el tratamiento capilar? ¡Estoy aquí para ayudarte!"
-        elif from_number in estado_conversacion and estado_conversacion[from_number] == "tratamiento_capilar":
+        elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "tratamiento_capilar":
             respuesta = obtener_respuesta_openai(mensaje, "El cliente está interesado en un tratamiento capilar.")
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI
