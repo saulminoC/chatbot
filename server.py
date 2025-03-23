@@ -44,17 +44,18 @@ def get_calendar_service():
     service = build('calendar', 'v3', credentials=creds)
     return service
 
-def obtener_respuesta_openai(mensaje):
+def obtener_respuesta_openai(mensaje, contexto=None):
     """
     Obtiene una respuesta del modelo de OpenAI.
     """
     try:
+        messages = [{"role": "system", "content": "Eres un asistente de chatbot amigable y servicial."}]
+        if contexto:
+            messages.append({"role": "user", "content": contexto})
+        messages.append({"role": "user", "content": mensaje})
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Eres un asistente de chatbot amigable y servicial."},
-                {"role": "user", "content": mensaje}
-            ]
+            messages=messages
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -166,6 +167,11 @@ def webhook():
             respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme para qué día y hora te gustaría agendarla?\nRecuerda que estamos disponibles " + HORARIO_ATENCION + "."
         elif from_number in estado_conversacion and estado_conversacion[from_number] == "agendando_cita":
             respuesta = procesar_cita(mensaje, from_number)
+        elif "tratamiento capilar" in mensaje_lower:
+            estado_conversacion[from_number] = "tratamiento_capilar"
+            respuesta = "¡Claro! ¿Qué tipo de tratamiento capilar estás buscando? Hay diferentes opciones como hidratación profunda, reparación de daños, control de frizz, crecimiento del cabello, entre otros. ¿Tienes alguna preferencia en particular o algún problema específico que quieras abordar con el tratamiento capilar? ¡Estoy aquí para ayudarte!"
+        elif from_number in estado_conversacion and estado_conversacion[from_number] == "tratamiento_capilar":
+            respuesta = obtener_respuesta_openai(mensaje, "El cliente está interesado en un tratamiento capilar.")
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI
             respuesta = obtener_respuesta_openai(mensaje)
