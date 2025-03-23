@@ -85,7 +85,6 @@ def extraer_fecha_hora(mensaje):
     except Exception as e:
         print(f"Error al extraer fecha y hora con OpenAI: {e}")
         return None
-
 def procesar_cita(mensaje, from_number):
     """
     Procesa una solicitud de cita y la guarda en Google Calendar.
