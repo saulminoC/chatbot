@@ -1,8 +1,9 @@
 import os
 import openai
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response
 from dotenv import load_dotenv
 import dateparser
+from twilio.twiml.messaging_response import MessagingResponse  # Importar TwiML
 
 # Cargar las variables de entorno
 load_dotenv()
@@ -45,20 +46,26 @@ def procesar_cita(mensaje):
 # Ruta para el webhook
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
-    if 'Body' in data:
-        mensaje = data['Body']
-        
+    # Twilio envía los datos en request.form, no en request.json
+    mensaje = request.form.get('Body')
+    from_number = request.form.get('From')
+
+    if mensaje:
         # Procesar el mensaje para ver si es una solicitud de cita
         if "cita" in mensaje.lower():
             respuesta = procesar_cita(mensaje)
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI
             respuesta = obtener_respuesta_openai(mensaje)
-        
-        return jsonify({'message': respuesta})
+
+        # Crear una respuesta en formato TwiML
+        twiml_response = MessagingResponse()
+        twiml_response.message(respuesta)
+
+        # Devolver la respuesta en formato XML
+        return Response(str(twiml_response), content_type='text/xml')
     else:
-        return jsonify({'error': 'Mensaje no encontrado en el request'}), 400
+        return "Mensaje no encontrado en el request", 400
 
 # Ruta para el endpoint raíz
 @app.route('/')
