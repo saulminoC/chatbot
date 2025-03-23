@@ -44,7 +44,7 @@ conversacion = {}
 # Función para interactuar con OpenAI
 def obtener_respuesta_openai(mensaje_usuario):
     response = openai.Completion.create(
-        engine="text-davinci-003",  # Usando el modelo GPT-3 más avanzado
+        engine="gpt-3.5-turbo",  # Usando el modelo GPT-3 más avanzado
         prompt=mensaje_usuario,     # El mensaje que el usuario envía
         max_tokens=150,             # Límite de tokens para la respuesta
         temperature=0.7,            # Controla la aleatoriedad
