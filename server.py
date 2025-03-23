@@ -7,7 +7,7 @@ import dateparser
 from twilio.twiml.messaging_response import MessagingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import asyncio
+from googleapiclient.errors import HttpError
 
 # Cargar las variables de entorno
 load_dotenv()
@@ -20,10 +20,10 @@ client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Configura las credenciales de Google Calendar
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-SERVICE_ACCOUNT_FILE = 'credentials.json'  # Ruta al archivo JSON de credenciales
+SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')  # Ruta al archivo JSON de credenciales
 
 # Horario de atención
-HORARIO_ATENCION = "de lunes a sábado de 8:00 a las 17:00"
+HORARIO_ATENCION = "de lunes a sábado de 8:00 a 17:00"
 
 # Servicios y precios
 SERVICIOS = {
@@ -45,7 +45,7 @@ def get_calendar_service():
     service = build('calendar', 'v3', credentials=creds)
     return service
 
-async def obtener_respuesta_openai(mensaje, contexto=None):
+def obtener_respuesta_openai(mensaje, contexto=None):
     """
     Obtiene una respuesta del modelo de OpenAI.
     """
@@ -63,7 +63,7 @@ async def obtener_respuesta_openai(mensaje, contexto=None):
         print(f"Error al obtener respuesta de OpenAI: {e}")
         return "Lo siento, hubo un error al procesar tu solicitud."
 
-async def extraer_fecha_hora(mensaje):
+def extraer_fecha_hora(mensaje):
     """
     Usa OpenAI para extraer la fecha y hora del mensaje.
     """
@@ -87,16 +87,17 @@ async def extraer_fecha_hora(mensaje):
         print(f"Error al extraer fecha y hora con OpenAI: {e}")
         return None
 
-def validar_horario_atencion(fecha):
+def validar_fecha_hora(fecha):
     """
-    Valida que la fecha esté dentro del horario de atención.
+    Valida que la fecha y hora estén dentro del horario de atención.
     """
     if fecha.weekday() >= 6:  # Domingo es 6
-        return False
-    hora = fecha.time()
-    return datetime.strptime("08:00", "%H:%M").time() <= hora <= datetime.strptime("17:00", "%H:%M").time()
+        return False, "Lo siento, no trabajamos los domingos."
+    if fecha.hour < 8 or fecha.hour >= 17:
+        return False, "Lo siento, nuestro horario de atención es de 8:00 a 17:00."
+    return True, None
 
-async def procesar_cita(mensaje, from_number):
+def procesar_cita(mensaje, from_number):
     """
     Procesa una solicitud de cita y la guarda en Google Calendar.
     """
@@ -108,15 +109,17 @@ async def procesar_cita(mensaje, from_number):
         return "¡Gracias! Ahora, ¿podrías decirme para qué día y hora te gustaría agendar tu cita?\nRecuerda que estamos disponibles " + HORARIO_ATENCION + "."
 
     # Intentar extraer la fecha y hora usando OpenAI
-    fecha = await extraer_fecha_hora(mensaje)
+    fecha = extraer_fecha_hora(mensaje)
 
     # Si OpenAI no pudo extraer la fecha, usar dateparser como respaldo
     if not fecha:
         fecha = dateparser.parse(mensaje)
 
     if fecha:
-        if not validar_horario_atencion(fecha):
-            return "Lo siento, la fecha y hora que proporcionaste están fuera de nuestro horario de atención. Por favor, elige un horario entre las 8:00 y las 17:00 de lunes a sábado."
+        # Validar la fecha y hora
+        es_valida, mensaje_error = validar_fecha_hora(fecha)
+        if not es_valida:
+            return mensaje_error
 
         try:
             # Crear el evento en Google Calendar
@@ -143,7 +146,7 @@ async def procesar_cita(mensaje, from_number):
                 del estado_conversacion[from_number]
 
             return f"¡Listo! Tu cita está agendada para el día {fecha.strftime('%d/%m/%Y a las %H:%M')}.\nTe enviaré un recordatorio 24 horas antes de la cita. Si necesitas reprogramar o cancelar, no dudes en contactarnos.\n\n¿Hay algo más en lo que pueda ayudarte? ¿Deseas agregar algún otro servicio a tu cita?"
-        except Exception as e:
+        except HttpError as e:
             print(f"Error al agendar la cita en Google Calendar: {e}")
             return "Lo siento, hubo un error al agendar tu cita. Por favor, intenta de nuevo."
     else:
@@ -161,7 +164,7 @@ def listar_servicios():
 
 # Ruta para el webhook
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     """
     Maneja las solicitudes entrantes de Twilio.
     """
@@ -185,17 +188,17 @@ async def webhook():
             respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme tu nombre?"
         elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "preguntando_nombre":
             estado_conversacion[from_number]["estado"] = "agendando_cita"
-            respuesta = await procesar_cita(mensaje, from_number)
+            respuesta = procesar_cita(mensaje, from_number)
         elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "agendando_cita":
-            respuesta = await procesar_cita(mensaje, from_number)
+            respuesta = procesar_cita(mensaje, from_number)
         elif "tratamiento capilar" in mensaje_lower:
             estado_conversacion[from_number] = {"estado": "tratamiento_capilar"}
             respuesta = "¡Claro! ¿Qué tipo de tratamiento capilar estás buscando? Hay diferentes opciones como hidratación profunda, reparación de daños, control de frizz, crecimiento del cabello, entre otros. ¿Tienes alguna preferencia en particular o algún problema específico que quieras abordar con el tratamiento capilar? ¡Estoy aquí para ayudarte!"
         elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "tratamiento_capilar":
-            respuesta = await obtener_respuesta_openai(mensaje, "El cliente está interesado en un tratamiento capilar.")
+            respuesta = obtener_respuesta_openai(mensaje, "El cliente está interesado en un tratamiento capilar.")
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI
-            respuesta = await obtener_respuesta_openai(mensaje)
+            respuesta = obtener_respuesta_openai(mensaje)
 
         # Crear una respuesta en formato TwiML
         twiml_response = MessagingResponse()
