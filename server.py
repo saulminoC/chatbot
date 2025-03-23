@@ -1,9 +1,12 @@
 import os
-from openai import OpenAI  # Importar la nueva clase OpenAI
+from datetime import timedelta
+from openai import OpenAI
 from flask import Flask, request, Response
 from dotenv import load_dotenv
 import dateparser
 from twilio.twiml.messaging_response import MessagingResponse
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # Cargar las variables de entorno
 load_dotenv()
@@ -14,46 +17,86 @@ app = Flask(__name__)
 # Configurar el cliente de OpenAI
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-# Función para obtener la respuesta de OpenAI
+# Configura las credenciales de Google Calendar
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+SERVICE_ACCOUNT_FILE = 'credentials.json'  # Ruta al archivo JSON de credenciales
+
+def get_calendar_service():
+    """
+    Obtiene el servicio de Google Calendar usando las credenciales de la cuenta de servicio.
+    """
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    service = build('calendar', 'v3', credentials=creds)
+    return service
+
 def obtener_respuesta_openai(mensaje):
+    """
+    Obtiene una respuesta del modelo de OpenAI.
+    """
     try:
-        # Usar la nueva API de OpenAI
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # Puedes cambiar a otro modelo como "gpt-4" si lo deseas
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Eres un asistente de chatbot."},
                 {"role": "user", "content": mensaje}
             ]
         )
-        # Obtener la respuesta del modelo
-        respuesta = response.choices[0].message.content
-        return respuesta
+        return response.choices[0].message.content
     except Exception as e:
         print(f"Error al obtener respuesta de OpenAI: {e}")
         return "Lo siento, hubo un error al procesar tu solicitud."
 
-# Función para manejar la creación de citas
 def procesar_cita(mensaje):
-    # Usar dateparser para intentar detectar la fecha y hora del mensaje
+    """
+    Procesa una solicitud de cita y la guarda en Google Calendar.
+    """
+    # Usar dateparser para detectar la fecha y hora del mensaje
     fecha = dateparser.parse(mensaje)
     if fecha:
-        # Aquí deberías verificar si el horario está disponible en tu base de datos
-        # Si la cita está disponible, guardar en la base de datos
-        # Para este ejemplo solo retornamos la cita
-        return f"Tu cita ha sido agendada para {fecha.strftime('%d/%m/%Y %H:%M')}."
+        try:
+            # Crear el evento en Google Calendar
+            service = get_calendar_service()
+            event = {
+                'summary': 'Cita agendada',
+                'description': 'Cita agendada a través del chatbot.',
+                'start': {
+                    'dateTime': fecha.isoformat(),
+                    'timeZone': 'America/Mexico_City',  # Ajusta la zona horaria
+                },
+                'end': {
+                    'dateTime': (fecha + timedelta(hours=1)).isoformat(),  # Duración de 1 hora
+                    'timeZone': 'America/Mexico_City',
+                },
+            }
+
+            # Insertar el evento en el calendario
+            calendar_id = 'primary'  # Usa el calendario principal
+            event = service.events().insert(calendarId=calendar_id, body=event).execute()
+
+            return f"Tu cita ha sido agendada para {fecha.strftime('%d/%m/%Y %H:%M')}."
+        except Exception as e:
+            print(f"Error al agendar la cita en Google Calendar: {e}")
+            return "Lo siento, hubo un error al agendar tu cita. Por favor, intenta de nuevo."
     else:
         return "Lo siento, no pude entender la fecha y hora de tu cita. Por favor, intenta de nuevo."
 
 # Ruta para el webhook
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    # Twilio envía los datos en request.form, no en request.json
+    """
+    Maneja las solicitudes entrantes de Twilio.
+    """
+    # Twilio envía los datos en request.form
     mensaje = request.form.get('Body')
     from_number = request.form.get('From')
 
     if mensaje:
+        # Convertir el mensaje a minúsculas para facilitar la comparación
+        mensaje_lower = mensaje.lower()
+
         # Procesar el mensaje para ver si es una solicitud de cita
-        if "cita" in mensaje.lower():
+        if "cita" in mensaje_lower or "agendar" in mensaje_lower or "reservar" in mensaje_lower:
             respuesta = procesar_cita(mensaje)
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI

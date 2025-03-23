@@ -3,4 +3,8 @@ openai>=1.0.0
 python-dotenv
 dateparser
 twilio
-gunicorn==21.2.0 
+gunicorn==21.2.0
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
