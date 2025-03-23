@@ -49,7 +49,7 @@ def obtener_respuesta_openai(mensaje):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Eres un asistente de chatbot."},
+                {"role": "system", "content": "Eres un asistente de chatbot amigable y servicial."},
                 {"role": "user", "content": mensaje}
             ]
         )
@@ -148,7 +148,7 @@ def webhook():
         # Respuesta inicial del bot
         if any(palabra in mensaje_lower for palabra in ["hola", "buenos días", "buenas tardes", "buenas noches"]):
             respuesta = f"¡Hola! Soy de la barbería d' Leo. ¿En qué puedo ayudarte hoy? Puedes preguntar sobre nuestros servicios, precios, promociones, productos disponibles en la sucursal, o incluso agendar una cita.\n\nNuestro horario de atención es {HORARIO_ATENCION}."
-        elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué servicios", "qué ofrecen"]):
+        elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué servicios", "qué ofrecen", "cuáles son sus servicios"]):
             respuesta = listar_servicios()
         elif "cita" in mensaje_lower or "agendar" in mensaje_lower:
             respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme para qué día y hora te gustaría agendarla?\nRecuerda que estamos disponibles " + HORARIO_ATENCION + "."
@@ -164,6 +164,7 @@ def webhook():
         return Response(str(twiml_response), content_type='text/xml')
     else:
         return "Mensaje no encontrado en el request", 400
+
 # Ruta para el endpoint raíz
 @app.route('/')
 def index():
