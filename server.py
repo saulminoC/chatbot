@@ -32,6 +32,9 @@ SERVICIOS = {
     "tratamiento capilar": "200 MXN",
 }
 
+# Estado de la conversación
+estado_conversacion = {}
+
 def get_calendar_service():
     """
     Obtiene el servicio de Google Calendar usando las credenciales de la cuenta de servicio.
@@ -82,10 +85,12 @@ def extraer_fecha_hora(mensaje):
         print(f"Error al extraer fecha y hora con OpenAI: {e}")
         return None
 
-def procesar_cita(mensaje):
+def procesar_cita(mensaje, from_number):
     """
     Procesa una solicitud de cita y la guarda en Google Calendar.
     """
+    global estado_conversacion
+
     # Intentar extraer la fecha y hora usando OpenAI
     fecha = extraer_fecha_hora(mensaje)
 
@@ -114,6 +119,10 @@ def procesar_cita(mensaje):
             calendar_id = 'primary'  # Usa el calendario principal
             event = service.events().insert(calendarId=calendar_id, body=event).execute()
 
+            # Limpiar el estado de la conversación
+            if from_number in estado_conversacion:
+                del estado_conversacion[from_number]
+
             return f"¡Listo! Tu cita está agendada para el día {fecha.strftime('%d/%m/%Y a las %H:%M')}.\nTe enviaré un recordatorio 24 horas antes de la cita. Si necesitas reprogramar o cancelar, no dudes en contactarnos.\n\n¿Hay algo más en lo que pueda ayudarte? ¿Deseas agregar algún otro servicio a tu cita?"
         except Exception as e:
             print(f"Error al agendar la cita en Google Calendar: {e}")
@@ -137,6 +146,8 @@ def webhook():
     """
     Maneja las solicitudes entrantes de Twilio.
     """
+    global estado_conversacion
+
     # Twilio envía los datos en request.form
     mensaje = request.form.get('Body')
     from_number = request.form.get('From')
@@ -151,7 +162,10 @@ def webhook():
         elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué servicios", "qué ofrecen", "cuáles son sus servicios"]):
             respuesta = listar_servicios()
         elif "cita" in mensaje_lower or "agendar" in mensaje_lower:
+            estado_conversacion[from_number] = "agendando_cita"
             respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme para qué día y hora te gustaría agendarla?\nRecuerda que estamos disponibles " + HORARIO_ATENCION + "."
+        elif from_number in estado_conversacion and estado_conversacion[from_number] == "agendando_cita":
+            respuesta = procesar_cita(mensaje, from_number)
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI
             respuesta = obtener_respuesta_openai(mensaje)
