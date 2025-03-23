@@ -1,9 +1,9 @@
 import os
-import openai
+from openai import OpenAI  # Importar la nueva clase OpenAI
 from flask import Flask, request, Response
 from dotenv import load_dotenv
 import dateparser
-from twilio.twiml.messaging_response import MessagingResponse  # Importar TwiML
+from twilio.twiml.messaging_response import MessagingResponse
 
 # Cargar las variables de entorno
 load_dotenv()
@@ -11,13 +11,14 @@ load_dotenv()
 # Inicializar la aplicación Flask
 app = Flask(__name__)
 
-# Configurar la clave de la API de OpenAI
-openai.api_key = os.getenv('OPENAI_API_KEY')
+# Configurar el cliente de OpenAI
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Función para obtener la respuesta de OpenAI
 def obtener_respuesta_openai(mensaje):
     try:
-        response = openai.ChatCompletion.create(
+        # Usar la nueva API de OpenAI
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",  # Puedes cambiar a otro modelo como "gpt-4" si lo deseas
             messages=[
                 {"role": "system", "content": "Eres un asistente de chatbot."},
@@ -25,7 +26,7 @@ def obtener_respuesta_openai(mensaje):
             ]
         )
         # Obtener la respuesta del modelo
-        respuesta = response['choices'][0]['message']['content']
+        respuesta = response.choices[0].message.content
         return respuesta
     except Exception as e:
         print(f"Error al obtener respuesta de OpenAI: {e}")
