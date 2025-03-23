@@ -126,7 +126,7 @@ def procesar_cita(mensaje, from_number):
             service = get_calendar_service()
             event = {
                 'summary': f"Cita agendada para {estado_conversacion[from_number]['nombre']}",
-                'description': f"Cita agendada a través del chatbot para {estado_conversacion[from_number]['nombre']}.",
+                'description': f"Cita agendada a través del chatbot para {estado_conversacion[from_number]['nombre']}. Servicio: {estado_conversacion[from_number].get('servicio', 'No especificado')}.",
                 'start': {
                     'dateTime': fecha.isoformat(),
                     'timeZone': 'America/Mexico_City',  # Ajusta la zona horaria
@@ -145,7 +145,7 @@ def procesar_cita(mensaje, from_number):
             if from_number in estado_conversacion:
                 del estado_conversacion[from_number]
 
-            return f"¡Listo! Tu cita está agendada para el día {fecha.strftime('%d/%m/%Y a las %H:%M')}.\nTe enviaré un recordatorio 24 horas antes de la cita. Si necesitas reprogramar o cancelar, no dudes en contactarnos.\n\n¿Hay algo más en lo que pueda ayudarte? ¿Deseas agregar algún otro servicio a tu cita?"
+            return f"¡Listo! Tu cita está agendada para el día {fecha.strftime('%d/%m/%Y a las %H:%M')}.\nTe enviaré un recordatorio 24 horas antes de la cita. Si necesitas reprogramar o cancelar, no dudes en contactarnos.\n\n¿Hay algo más en lo que pueda ayudarte?"
         except HttpError as e:
             print(f"Error al agendar la cita en Google Calendar: {e}")
             return "Lo siento, hubo un error al agendar tu cita. Por favor, intenta de nuevo."
@@ -159,7 +159,7 @@ def listar_servicios():
     servicios_texto = "Claro, te comparto los servicios que ofrecemos:\n\n"
     for servicio, precio in SERVICIOS.items():
         servicios_texto += f"{servicio.capitalize()}: {precio}\n"
-    servicios_texto += "\nTambién ofrecemos otros servicios como diseño de barba, tratamientos capilares y más.\n¿Te gustaría saber más sobre algún servicio en particular o tal vez ver nuestras promociones?"
+    servicios_texto += "\n¿Qué servicio te gustaría agendar? Responde con el nombre del servicio."
     return servicios_texto
 
 # Ruta para el webhook
@@ -183,19 +183,14 @@ def webhook():
             respuesta = f"¡Hola! Soy de la barbería d' Leo. ¿En qué puedo ayudarte hoy? Puedes preguntar sobre nuestros servicios, precios, promociones, productos disponibles en la sucursal, o incluso agendar una cita.\n\nNuestro horario de atención es {HORARIO_ATENCION}."
         elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué servicios", "qué ofrecen", "cuáles son tus servicios"]):
             respuesta = listar_servicios()
-        elif "cita" in mensaje_lower or "agendar" in mensaje_lower:
-            estado_conversacion[from_number] = {"estado": "preguntando_nombre"}
+        elif mensaje_lower in SERVICIOS:
+            estado_conversacion[from_number] = {"estado": "preguntando_nombre", "servicio": mensaje_lower}
             respuesta = "¡Perfecto! Para agendar tu cita, ¿podrías decirme tu nombre?"
         elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "preguntando_nombre":
             estado_conversacion[from_number]["estado"] = "agendando_cita"
             respuesta = procesar_cita(mensaje, from_number)
         elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "agendando_cita":
             respuesta = procesar_cita(mensaje, from_number)
-        elif "tratamiento capilar" in mensaje_lower:
-            estado_conversacion[from_number] = {"estado": "tratamiento_capilar"}
-            respuesta = "¡Claro! ¿Qué tipo de tratamiento capilar estás buscando? Hay diferentes opciones como hidratación profunda, reparación de daños, control de frizz, crecimiento del cabello, entre otros. ¿Tienes alguna preferencia en particular o algún problema específico que quieras abordar con el tratamiento capilar? ¡Estoy aquí para ayudarte!"
-        elif from_number in estado_conversacion and estado_conversacion[from_number]["estado"] == "tratamiento_capilar":
-            respuesta = obtener_respuesta_openai(mensaje, "El cliente está interesado en un tratamiento capilar.")
         else:
             # Si no es una solicitud de cita, obtener respuesta de OpenAI
             respuesta = obtener_respuesta_openai(mensaje)
