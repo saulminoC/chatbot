@@ -13,8 +13,8 @@ app = Flask(__name__)
 
 # Constantes del negocio
 HORARIO = "de lunes a sábado de 8:00 a 17:00"
-HORA_APERTURA = 8
-HORA_CIERRE = 17
+HORA_APERTURA = 8  # 8 am
+HORA_CIERRE = 17   # 5 pm
 
 SERVICIOS = {
     "corte de cabello": {"precio": "100 MXN", "duracion": 30},
@@ -41,7 +41,8 @@ def parsear_fecha(texto):
                 'PREFER_DATES_FROM': 'future',
                 'RELATIVE_BASE': datetime.now(),
                 'TIMEZONE': 'America/Mexico_City',
-                'RETURN_AS_TIMEZONE_AWARE': True
+                'RETURN_AS_TIMEZONE_AWARE': True,
+                'LANGUAGES': ['es']
             }
         )
     except:
@@ -51,74 +52,125 @@ def validar_fecha(fecha):
     ahora = datetime.now().astimezone()
     
     if not fecha:
-        return False, "No entendí la fecha. Ejemplo: 'Mañana a las 10am'"
+        return False, "No entendí la fecha. Por favor escribe algo como:\n'Mañana a las 10am'\n'Jueves a las 4pm'"
     
     if fecha < ahora - timedelta(minutes=30):
-        return False, "Esa hora ya pasó. ¿Podrías indicar una hora futura?"
+        return False, "⚠️ Esa hora ya pasó. ¿Quieres agendar para otro momento?"
     
     if fecha.weekday() >= 6:
-        return False, "Solo trabajamos de lunes a sábado."
+        return False, "🔒 Solo trabajamos de lunes a sábado."
     
     if fecha.hour < HORA_APERTURA or fecha.hour >= HORA_CIERRE:
-        return False, f"Nuestro horario es de {HORA_APERTURA}am a {HORA_CIERRE-12}pm"
+        return False, f"⏰ Nuestro horario es de {HORA_APERTURA}am a {HORA_CIERRE-12}pm. ¿Qué otra hora te viene bien?"
     
     return True, None
+
+def mostrar_servicios():
+    return (
+        "💈 *Servicios disponibles* 💈\n\n" +
+        "\n".join([f"• ✂️ {k.capitalize()}: {v['precio']} ({v['duracion']} min)" 
+                 for k, v in SERVICIOS.items()]) +
+        "\n\n_Responde con el nombre del servicio que deseas_"
+    )
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     mensaje = request.form.get('Body', '').strip().lower()
     remitente = request.form.get('From')
     
-    if not remitente in conversaciones:
-        conversaciones[remitente] = {'estado': 'inicio'}
+    # Inicializar conversación si es nuevo
+    if remitente not in conversaciones:
+        conversaciones[remitente] = {'estado': 'inicio', 'intentos': 0}
     
-    estado = conversaciones[remitente]['estado']
+    estado_actual = conversaciones[remitente]['estado']
     
     try:
-        # Flujo de conversación principal
-        if estado == 'inicio':
-            if any(saludo in mensaje for saludo in ['hola', 'buenos días', 'buenas tardes']):
-                respuesta = (
-                    "¡Hola! 👋 Soy el asistente de Barbería d' Leo.\n\n"
-                    "Puedo ayudarte con:\n"
-                    "• 📋 Servicios\n"
-                    "• 💰 Precios\n"
-                    "• 🗓️ Agendar cita\n\n"
-                    f"Horario: {HORARIO}"
-                )
-            elif 'servicios' in mensaje or 'precios' in mensaje:
-                conversaciones[remitente]['estado'] = 'listando_servicios'
-                respuesta = (
-                    "💈 Servicios disponibles:\n\n" +
-                    "\n".join([f"• {k.capitalize()}: {v['precio']} ({v['duracion']} min)" 
-                             for k, v in SERVICIOS.items()]) +
-                    "\n\nResponde con el servicio que deseas."
+        # Manejo de intentos repetidos
+        if mensaje == conversaciones[remitente].get('ultimo_mensaje'):
+            conversaciones[remitente]['intentos'] += 1
+        else:
+            conversaciones[remitente]['intentos'] = 0
+        
+        conversaciones[remitente]['ultimo_mensaje'] = mensaje
+        
+        # Si repite muchas veces, ofrecer ayuda
+        if conversaciones[remitente]['intentos'] >= 2:
+            if estado_actual == 'listando_servicios':
+                return Response(
+                    str(MessagingResponse().message(
+                        "¿Necesitas ayuda para elegir? Te recomiendo:\n\n"
+                        "✂️ *Corte de cabello*: Ideal para un look renovado\n"
+                        "🧔 *Diseño de barba*: Para un acabado perfecto\n\n"
+                        "¿Cuál prefieres?"
+                    )),
+                    content_type='text/xml'
                 )
             else:
-                respuesta = "Envía 'servicios' para ver nuestras opciones o 'agendar' para una cita."
+                return Response(
+                    str(MessagingResponse().message(
+                        "¿Te gustaría hablar con un asistente humano? "
+                        "Responde 'asesor' o intenta nuevamente."
+                    )),
+                    content_type='text/xml'
+                )
         
-        elif estado == 'listando_servicios':
+        # Flujo principal de conversación
+        if estado_actual == 'inicio':
+            if any(saludo in mensaje for saludo in ['hola', 'buenos días', 'buenas tardes']):
+                respuesta = (
+                    "¡Hola! 👋 Soy tu asistente de *Barbería d' Leo*.\n\n"
+                    "¿En qué puedo ayudarte hoy?\n\n"
+                    "📋 *Servicios disponibles*\n"
+                    "🗓️ Agendar cita\n"
+                    "📍 Ubicación y horarios\n\n"
+                    f"*Horario:* {HORARIO}"
+                )
+            elif 'servicio' in mensaje or 'precio' in mensaje:
+                conversaciones[remitente]['estado'] = 'listando_servicios'
+                respuesta = mostrar_servicios()
+            else:
+                respuesta = (
+                    "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
+                    "Puedes preguntar por:\n"
+                    "• 'servicios' para ver opciones\n"
+                    "• 'agendar' para reservar cita\n"
+                    "• 'horario' para conocer disponibilidad"
+                )
+        
+        elif estado_actual == 'listando_servicios':
             if mensaje in SERVICIOS:
                 conversaciones[remitente].update({
                     'estado': 'solicitando_nombre',
                     'servicio': mensaje
                 })
-                respuesta = f"¿Cómo te llamas para agendar tu {mensaje}?"
+                respuesta = f"✍️ ¿Cómo te llamas para agendar tu *{mensaje}*?"
+            elif 'servicio' in mensaje or 'precio' in mensaje:
+                respuesta = mostrar_servicios()
             else:
-                respuesta = "Por favor elige un servicio de la lista."
+                respuesta = (
+                    "No reconozco ese servicio. Por favor elige uno:\n\n" +
+                    "\n".join([f"• {k.capitalize()}" for k in SERVICIOS.keys()]) +
+                    "\n\nO escribe 'servicios' para ver detalles."
+                )
         
-        elif estado == 'solicitando_nombre':
-            conversaciones[remitente].update({
-                'estado': 'solicitando_fecha',
-                'nombre': mensaje.title()
-            })
-            respuesta = (
-                f"Gracias, {mensaje.title()}. ¿Para qué día y hora quieres tu "
-                f"{conversaciones[remitente]['servicio']}?\n"
-                "Ejemplos:\n• Mañana a las 10am\n• Viernes a las 3pm"
-            )
+        elif estado_actual == 'solicitando_nombre':
+            if len(mensaje.split()) >= 2:  # Nombre y apellido
+                conversaciones[remitente].update({
+                    'estado': 'solicitando_fecha',
+                    'nombre': mensaje.title()
+                })
+                respuesta = (
+                    f"👋 Perfecto, {mensaje.title()}. ¿Para qué día y hora quieres tu "
+                    f"*{conversaciones[remitente]['servicio']}*?\n\n"
+                    "Ejemplos:\n"
+                    "• Mañana a las 10am\n"
+                    "• Viernes a las 3pm\n"
+                    "• 15 de abril a las 11"
+                )
+            else:
+                respuesta = "Por favor escribe tu *nombre completo* (nombre y apellido)"
         
-        elif estado == 'solicitando_fecha':
+        elif estado_actual == 'solicitando_fecha':
             fecha = parsear_fecha(mensaje)
             valido, error = validar_fecha(fecha)
             
@@ -128,17 +180,20 @@ def webhook():
                     'fecha': fecha
                 })
                 respuesta = (
-                    f"📅 Confirmación:\n\n"
-                    f"• Servicio: {conversaciones[remitente]['servicio'].capitalize()}\n"
-                    f"• Fecha: {fecha.strftime('%A %d/%m')}\n"
-                    f"• Hora: {fecha.strftime('%I:%M %p')}\n\n"
-                    f"¿Es correcto? Responde 'sí' para confirmar."
+                    "📝 *Confirmación de cita*\n\n"
+                    f"👤 Cliente: {conversaciones[remitente]['nombre']}\n"
+                    f"💈 Servicio: {conversaciones[remitente]['servicio'].capitalize()}\n"
+                    f"📅 Fecha: {fecha.strftime('%A %d/%m/%Y')}\n"
+                    f"⏰ Hora: {fecha.strftime('%I:%M %p')}\n\n"
+                    "¿Todo es correcto? Responde:\n"
+                    "'✅ sí' para confirmar\n"
+                    "'✏️ no' para modificar"
                 )
             else:
-                respuesta = f"{error}\n\nPor favor ingresa otra fecha/hora:"
+                respuesta = error
         
-        elif estado == 'confirmando_cita':
-            if mensaje in ['sí', 'si', 'confirmar']:
+        elif estado_actual == 'confirmando_cita':
+            if mensaje.startswith(('sí', 'si', 'confirm')):
                 try:
                     servicio = get_calendar_service()
                     evento = {
@@ -152,27 +207,33 @@ def webhook():
                             'dateTime': (conversaciones[remitente]['fecha'] + 
                                        timedelta(minutes=SERVICIOS[conversaciones[remitente]['servicio']]['duracion'])).isoformat(),
                             'timeZone': 'America/Mexico_City',
+                        },
+                        'reminders': {
+                            'useDefault': True,
                         }
                     }
                     servicio.events().insert(calendarId='primary', body=evento).execute()
                     
                     respuesta = (
-                        "✅ ¡Cita agendada con éxito!\n\n"
-                        f"📅 {conversaciones[remitente]['fecha'].strftime('%A %d/%m a las %I:%M %p')}\n"
+                        "🎉 *¡Cita confirmada con éxito!* 🎉\n\n"
+                        f"📅 {conversaciones[remitente]['fecha'].strftime('%A %d/%m/%Y a las %I:%M %p')}\n"
                         f"💈 Servicio: {conversaciones[remitente]['servicio'].capitalize()}\n\n"
-                        "📍 Av. Principal 123\n"
-                        "📞 Tel: 555-1234\n\n"
-                        "Te esperamos en tu cita."
+                        "📍 *Ubicación:* Av. Principal 123, Col. Centro\n"
+                        "📞 *Teléfono:* 555-1234\n\n"
+                        "⏰ Llega 5 minutos antes.\n"
+                        "🔔 Te enviaremos un recordatorio.\n\n"
+                        "¡Gracias por elegir *Barbería d' Leo*!"
                     )
                     del conversaciones[remitente]
                 except Exception as e:
-                    respuesta = "❌ Error al agendar. Por favor llama al 555-1234."
+                    print(f"Error al agendar: {e}")
+                    respuesta = (
+                        "❌ Hubo un error al agendar tu cita.\n\n"
+                        "Por favor llámanos al 📞 555-1234 para asistencia inmediata."
+                    )
             else:
                 conversaciones[remitente]['estado'] = 'solicitando_fecha'
-                respuesta = "Entendido. ¿Qué nueva fecha prefieres?"
-        
-        else:
-            respuesta = "Envía 'hola' para reiniciar la conversación."
+                respuesta = "Entendido. ¿Para qué nueva fecha y hora quieres agendar?"
         
         # Enviar respuesta
         twiml = MessagingResponse()
@@ -180,14 +241,17 @@ def webhook():
         return Response(str(twiml), content_type='text/xml')
     
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error en webhook: {e}")
+        # Reiniciar conversación en caso de error
+        if remitente in conversaciones:
+            del conversaciones[remitente]
         twiml = MessagingResponse()
-        twiml.message("Ocurrió un error. Por favor envía 'hola' para reiniciar.")
+        twiml.message("🔧 Ocurrió un error inesperado. Por favor envía 'hola' para comenzar de nuevo.")
         return Response(str(twiml), content_type='text/xml')
 
 @app.route('/')
 def home():
-    return "Chatbot Barbería d' Leo - Operativo"
+    return "Chatbot Barbería d' Leo - Servicio activo"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
