@@ -9,23 +9,24 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# Cargar las variables de entorno
+# Cargar variables de entorno
 load_dotenv()
 
-# Inicializar la aplicación Flask
+# Inicializar Flask
 app = Flask(__name__)
 
-# Configurar el cliente de OpenAI
+# Configurar OpenAI
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-# Configura las credenciales de Google Calendar
+# Configurar Google Calendar
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
 
-# Horario de atención
+# Constantes de negocio
 HORARIO_ATENCION = "de lunes a sábado de 8:00 a 17:00"
+HORA_APERTURA = 8  # 8 am
+HORA_CIERRE = 17   # 5 pm
 
-# Servicios y precios
 SERVICIOS = {
     "corte de cabello": {"precio": "100 MXN", "duracion": 30},
     "afeitado": {"precio": "500 MXN", "duracion": 45},
@@ -33,301 +34,186 @@ SERVICIOS = {
     "tratamiento capilar": {"precio": "200 MXN", "duracion": 60},
 }
 
-# Estado de la conversación
+# Estados de conversación
 estado_conversacion = {}
 
+# --- Funciones principales ---
 def get_calendar_service():
-    """Obtiene el servicio de Google Calendar"""
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    service = build('calendar', 'v3', credentials=creds)
-    return service
-
-def obtener_respuesta_openai(mensaje, from_number=None):
-    """Obtiene una respuesta contextual de OpenAI"""
-    try:
-        # Construir contexto basado en el estado
-        contexto = []
-        
-        if from_number and from_number in estado_conversacion:
-            estado = estado_conversacion[from_number]
-            if estado.get('servicio'):
-                contexto.append(f"El cliente está interesado en: {estado['servicio']}")
-            if estado.get('nombre'):
-                contexto.append(f"Nombre del cliente: {estado['nombre']}")
-        
-        messages = [{
-            "role": "system", 
-            "content": """
-            Eres el asistente virtual de la barbería d' Leo. 
-            Sé amable, profesional y conciso. Usa emojis moderadamente.
-            Si no sabes algo, ofrece contactar al personal.
-            """
-        }]
-        
-        if contexto:
-            messages.append({"role": "user", "content": "\n".join(contexto)})
-        
-        messages.append({"role": "user", "content": mensaje})
-        
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=150
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"Error en OpenAI: {e}")
-        return "Disculpa, estoy teniendo dificultades. ¿Podrías repetir o llamar al 555-1234?"
+    return build('calendar', 'v3', credentials=creds)
 
 def extraer_fecha_hora(mensaje):
-    """Extrae fecha y hora con mejor manejo de fechas futuras"""
+    """Extrae fecha/hora con mejor manejo de formatos como '4 pm'"""
     try:
-        # Primero intenta con dateparser configurado para fechas futuras
-        fecha = dateparser.parse(
-            mensaje,
-            settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            }
-        )
+        settings = {
+            'PREFER_DATES_FROM': 'future',
+            'RELATIVE_BASE': datetime.now(),
+            'TIMEZONE': 'America/Mexico_City',
+            'RETURN_AS_TIMEZONE_AWARE': True
+        }
+        fecha = dateparser.parse(mensaje, settings=settings)
         
-        # Si no funciona, usa OpenAI como respaldo
         if not fecha:
+            # Respaldo con OpenAI para formatos complejos
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "Extrae fecha y hora en formato YYYY-MM-DD HH:MM. Asegúrate que sea fecha futura."},
+                    {"role": "system", "content": "Extrae fecha y hora en formato ISO. Ej: 2025-03-27T16:00:00"},
                     {"role": "user", "content": mensaje}
                 ]
             )
             fecha_str = response.choices[0].message.content.strip()
-            fecha = dateparser.parse(fecha_str)
+            fecha = dateparser.parse(fecha_str, settings=settings)
         
         return fecha
     except Exception as e:
-        print(f"Error al extraer fecha: {e}")
+        print(f"Error al parsear fecha: {e}")
         return None
 
 def validar_fecha_hora(fecha):
-    """Valida que la fecha sea adecuada y futura"""
-    ahora = datetime.now()
+    """Valida fecha considerando horario de atención (8am-5pm)"""
+    ahora = datetime.now().astimezone()
     
     if not fecha:
-        return False, "No entendí la fecha. ¿Podrías ser más específico? Ej: '25 de junio a las 2pm'"
+        return False, "No entendí la fecha/hora. Ej: 'Jueves a las 4pm'"
     
-    # Primero verifica que sea fecha futura (con margen de 1 hora)
-    if fecha < (ahora - timedelta(hours=1)):
-        # Verifica si el usuario puso una fecha pasada pero quiso decir del próximo año
-        fecha_proximo_ano = fecha.replace(year=ahora.year + 1)
-        if fecha_proximo_ano > ahora:
-            return True, None  # Acepta como fecha válida
-        return False, "Parece que esa fecha ya pasó. ¿Quisiste decir un día futuro? Por ejemplo: 'Viernes próximo a las 12pm'"
+    # Asegurar zona horaria
+    if not hasattr(fecha, 'tzinfo') or fecha.tzinfo is None:
+        fecha = fecha.replace(tzinfo=ahora.tzinfo)
     
-    # Resto de validaciones (día y horario)
-    if fecha.weekday() >= 6:
-        return False, "Lo siento, solo trabajamos de lunes a sábado."
+    # Validaciones
+    if fecha < ahora - timedelta(minutes=30):
+        return False, "Esa hora ya pasó. ¿Quisiste decir otro día?"
     
-    if fecha.hour < 8 or fecha.hour >= 17:
-        return False, f"Nuestro horario es de 8:00 a 17:00. ¿Podrías elegir otra hora entre ese rango?"
+    if fecha.weekday() >= 6:  # Domingo=6
+        return False, "Solo trabajamos de lunes a sábado."
+    
+    # Validación clave para horario (8am-5pm)
+    if fecha.hour < HORA_APERTURA or fecha.hour >= HORA_CIERRE:
+        return False, f"Horario: {HORA_APERTURA}am-{HORA_CIERRE-12}pm. ¿Otra hora?"
     
     return True, None
 
-def listar_servicios():
-    """Devuelve lista formateada de servicios"""
-    servicios_texto = "💈 Servicios disponibles:\n\n"
-    for servicio, info in SERVICIOS.items():
-        servicios_texto += f"• {servicio.capitalize()}: {info['precio']} ({info['duracion']} min)\n"
-    servicios_texto += "\nResponde con el servicio que deseas."
-    return servicios_texto
-
-def generar_respuesta_servicio(servicio):
-    """Genera respuesta específica para cada servicio"""
-    respuestas = {
-        "corte de cabello": "✂️ ¡Buen choice! ¿Qué estilo prefieres? (moderno, clásico, fade, etc.)",
-        "afeitado": "🧔 ¡Excelente! Usamos toallas calientes y productos premium. ¿Es para hoy?",
-        "diseño de barba": "🧔‍♂️ Perfecto para definir tu estilo. ¿Tienes algún diseño en mente?",
-        "tratamiento capilar": "💆‍♂️ Ideal para tu cabello. ¿Buscas hidratación, crecimiento o control?"
-    }
-    return respuestas.get(servicio.lower(), f"✅ {servicio.capitalize()} seleccionado. ¿Tu nombre por favor?")
-
+# --- Manejo de conversación ---
 def manejar_inicio(mensaje, from_number):
-    """Maneja el estado inicial de la conversación"""
     mensaje_lower = mensaje.lower()
     
-    if any(palabra in mensaje_lower for palabra in ["hola", "buenos días", "buenas tardes", "buenas noches"]):
+    if any(palabra in mensaje_lower for palabra in ["hola", "buenos días", "buenas tardes"]):
         return (f"¡Hola! 👋 Soy el asistente de Barbería d' Leo.\n\n"
-                f"Puedes preguntar sobre:\n"
-                f"• 📋 Nuestros servicios\n"
+                f"Puedo ayudarte con:\n"
+                f"• 📋 Servicios\n"
                 f"• 💰 Precios\n"
-                f"• 🗓️ Agendar cita\n"
-                f"• 📍 Ubicación\n\n"
+                f"• 🗓️ Agendar cita\n\n"
                 f"Horario: {HORARIO_ATENCION}")
     
-    elif any(palabra in mensaje_lower for palabra in ["servicios", "precios", "qué ofrecen"]):
-        estado_conversacion[from_number]["estado"] = "seleccion_servicio"
-        return listar_servicios()
+    elif any(palabra in mensaje_lower for palabra in ["servicios", "precios"]):
+        estado_conversacion[from_number] = {"estado": "seleccion_servicio"}
+        return ("💈 Servicios:\n\n" +
+                "\n".join([f"• {k.capitalize()}: {v['precio']} ({v['duracion']} min)" 
+                          for k, v in SERVICIOS.items()]) +
+                "\n\nResponde con el servicio que deseas.")
     
     elif mensaje_lower in SERVICIOS:
-        estado_conversacion[from_number].update({
-            "estado": "confirmacion_servicio",
-            "servicio": mensaje_lower
-        })
-        return generar_respuesta_servicio(mensaje_lower)
-    
-    else:
-        return obtener_respuesta_openai(mensaje, from_number)
-
-def manejar_seleccion_servicio(mensaje, from_number):
-    """Maneja la selección de servicio"""
-    if mensaje.lower() in SERVICIOS:
-        estado_conversacion[from_number].update({
+        estado_conversacion[from_number] = {
             "estado": "preguntando_nombre",
-            "servicio": mensaje.lower()
+            "servicio": mensaje_lower
+        }
+        return f"¿Cómo te llamas para agendar tu {mensaje_lower}?"
+    
+    else:
+        return obtener_respuesta_openai(mensaje)
+
+def manejar_agendamiento(mensaje, from_number):
+    estado = estado_conversacion[from_number]
+    
+    if estado["estado"] == "preguntando_nombre":
+        estado.update({
+            "estado": "agendando_cita",
+            "nombre": mensaje.title(),
+            "intentos_fecha": 0
         })
-        return f"¿Cómo te llamas para agendar tu {mensaje.lower()}?"
-    else:
-        return "No reconozco ese servicio. Por favor elige uno de la lista."
-
-def manejar_nombre(mensaje, from_number):
-    """Maneja la captura del nombre"""
-    estado_conversacion[from_number].update({
-        "estado": "agendando_cita",
-        "nombre": mensaje
-    })
-    return (f"Gracias, {mensaje}. ¿Para qué día y hora quieres tu {estado_conversacion[from_number]['servicio']}?\n"
-            f"Ejemplo: 'Mañana a las 10am' o 'Viernes 15 a las 3pm'")
-
-def manejar_cita(mensaje, from_number):
-    """Maneja el agendamiento de cita con mejores mensajes de error"""
-    fecha = extraer_fecha_hora(mensaje)
+        return (f"Gracias, {estado['nombre']}. ¿Para qué día y hora quieres tu {estado['servicio']}?\n"
+                f"Ej: 'Mañana a las 10am' o 'Jueves 27 a las 4pm'")
     
-    if not fecha:
-        return ("No pude entender la fecha. Por favor escribe algo como:\n"
-                "'Viernes a las 3pm'\n"
-                "'15 de julio a las 11am'\n"
-                "'Mañana a las 10'")
-    
-    es_valida, mensaje_error = validar_fecha_hora(fecha)
-    if not es_valida:
-        estado_conversacion[from_number]["intentos_fecha"] = estado_conversacion[from_number].get("intentos_fecha", 0) + 1
+    elif estado["estado"] == "agendando_cita":
+        fecha = extraer_fecha_hora(mensaje)
+        valido, error = validar_fecha_hora(fecha)
         
-        if estado_conversacion[from_number]["intentos_fecha"] >= 2:
-            return (f"{mensaje_error}\n\n¿Prefieres que te llame un asesor humano? "
-                    "Responde 'sí' para transferir o escribe otra fecha.")
+        if not valido:
+            estado["intentos_fecha"] += 1
+            if estado["intentos_fecha"] >= 2:
+                return f"{error}\n\n¿Necesitas ayuda? Llama al 555-1234."
+            return f"{error}\n\nPor favor, ingresa otra fecha/hora:"
         
-        return f"{mensaje_error}\n\nPor favor, ingresa otra fecha y hora:"
+        estado.update({
+            "estado": "confirmacion_cita",
+            "fecha": fecha
+        })
+        return (f"📅 Confirmación:\n\n"
+                f"• Cliente: {estado['nombre']}\n"
+                f"• Servicio: {estado['servicio'].capitalize()}\n"
+                f"• Fecha: {fecha.strftime('%A %d/%m')}\n"
+                f"• Hora: {fecha.strftime('%I:%M %p')}\n\n"
+                f"¿Es correcto? Responde 'sí' o 'no'.")
     
-    # Si la fecha es válida
-    estado_conversacion[from_number].update({
-        "estado": "confirmacion_cita",
-        "fecha": fecha,
-        "intentos_fecha": 0  # Resetear contador de intentos
-    })
-    
-    return (f"📅 Confirmación de cita:\n\n"
-            f"• Cliente: {estado_conversacion[from_number]['nombre']}\n"
-            f"• Servicio: {estado_conversacion[from_number]['servicio'].capitalize()}\n"
-            f"• Fecha: {fecha.strftime('%A %d/%m/%Y')}\n"
-            f"• Hora: {fecha.strftime('%I:%M %p')}\n\n"
-            f"¿Todo correcto? Responde 'sí' para confirmar o 'no' para cambiar.")
-    
-def manejar_confirmacion(mensaje, from_number):
-    """Maneja la confirmación final"""
-    mensaje_lower = mensaje.lower()
-    
-    if mensaje_lower in ["sí", "si", "confirmo", "correcto"]:
-        try:
-            estado = estado_conversacion[from_number]
-            servicio = SERVICIOS[estado['servicio']]
+    elif estado["estado"] == "confirmacion_cita":
+        if mensaje.lower() in ["sí", "si", "confirmar"]:
+            try:
+                # Agendar en Google Calendar
+                event = {
+                    'summary': f"Cita: {estado['nombre']} - {estado['servicio']}",
+                    'start': {'dateTime': estado['fecha'].isoformat(), 'timeZone': 'America/Mexico_City'},
+                    'end': {'dateTime': (estado['fecha'] + timedelta(minutes=SERVICIOS[estado['servicio']]['duracion'])).isoformat(),
+                            'timeZone': 'America/Mexico_City'},
+                    'reminders': {'useDefault': True}
+                }
+                service = get_calendar_service()
+                service.events().insert(calendarId='primary', body=event).execute()
+                
+                # Respuesta de éxito
+                respuesta = (f"✅ ¡Listo! Tu cita para {estado['servicio']} está agendada:\n"
+                            f"📅 {estado['fecha'].strftime('%A %d/%m a las %I:%M %p')}\n\n"
+                            f"📍 Av. Principal 123\n"
+                            f"📞 555-1234\n\n"
+                            f"Te enviaremos un recordatorio.")
+                
+                del estado_conversacion[from_number]
+                return respuesta
             
-            event = {
-                'summary': f"Cita: {estado['nombre']} - {estado['servicio']}",
-                'description': f"Cliente: {estado['nombre']}\nServicio: {estado['servicio']}\nAgendado vía WhatsApp",
-                'start': {
-                    'dateTime': estado['fecha'].isoformat(),
-                    'timeZone': 'America/Mexico_City',
-                },
-                'end': {
-                    'dateTime': (estado['fecha'] + timedelta(minutes=servicio['duracion'])).isoformat(),
-                    'timeZone': 'America/Mexico_City',
-                },
-                'reminders': {
-                    'useDefault': False,
-                    'overrides': [
-                        {'method': 'popup', 'minutes': 1440},
-                        {'method': 'popup', 'minutes': 60},
-                    ],
-                },
-            }
-            
-            service = get_calendar_service()
-            event = service.events().insert(calendarId='primary', body=event).execute()
-            
-            # Preparar respuesta de éxito
-            respuesta = (f"✅ ¡Cita confirmada!\n\n"
-                         f"📅 {estado['fecha'].strftime('%A %d/%m/%Y')}\n"
-                         f"⏰ {estado['fecha'].strftime('%H:%M')}\n"
-                         f"💈 {estado['servicio'].capitalize()}\n\n"
-                         f"Te esperamos en Av. Principal 123. ¡Gracias {estado['nombre']}!")
-            
-            # Limpiar estado
-            del estado_conversacion[from_number]
-            
-            return respuesta
-            
-        except Exception as e:
-            print(f"Error al agendar: {e}")
-            return "❌ Error al agendar. Por favor, llama al 555-1234."
-    
-    elif mensaje_lower in ["no", "cancelar"]:
-        del estado_conversacion[from_number]
-        return "Entendido. ¿Quieres comenzar de nuevo?"
-    
-    else:
-        return "No entendí. Responde 'sí' para confirmar o 'no' para cancelar."
+            except Exception as e:
+                print(f"Error al agendar: {e}")
+                return "❌ Error al agendar. Por favor llama al 555-1234."
+        
+        else:
+            estado["estado"] = "agendando_cita"
+            return "Entendido. ¿Qué nueva fecha/hora prefieres?"
 
-def manejar_conversacion(mensaje, from_number):
-    """Función principal que maneja el flujo de conversación"""
-    global estado_conversacion
-    
-    # Inicializar estado si no existe
-    if from_number not in estado_conversacion:
-        estado_conversacion[from_number] = {"estado": "inicio"}
-    
-    estado = estado_conversacion[from_number]["estado"]
-    
-    # Manejar según el estado actual
-    if estado == "inicio":
-        return manejar_inicio(mensaje, from_number)
-    elif estado == "seleccion_servicio":
-        return manejar_seleccion_servicio(mensaje, from_number)
-    elif estado == "confirmacion_servicio":
-        estado_conversacion[from_number]["estado"] = "preguntando_nombre"
-        return f"¿Cómo te llamas para agendar tu {estado_conversacion[from_number]['servicio']}?"
-    elif estado == "preguntando_nombre":
-        return manejar_nombre(mensaje, from_number)
-    elif estado == "agendando_cita":
-        return manejar_cita(mensaje, from_number)
-    elif estado == "confirmacion_cita":
-        return manejar_confirmacion(mensaje, from_number)
-    else:
-        return obtener_respuesta_openai(mensaje, from_number)
-
+# --- Webhook principal ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Endpoint principal para Twilio"""
-    global estado_conversacion
-    
     mensaje = request.form.get('Body', '').strip()
     from_number = request.form.get('From')
     
     if not mensaje or not from_number:
-        return "Mensaje no válido", 400
+        return "Mensaje inválido", 400
     
     try:
-        respuesta = manejar_conversacion(mensaje, from_number)
+        # Inicializar estado si es nuevo
+        if from_number not in estado_conversacion:
+            estado_conversacion[from_number] = {"estado": "inicio"}
+        
+        estado = estado_conversacion[from_number]["estado"]
+        
+        # Manejar flujo de conversación
+        if estado == "inicio":
+            respuesta = manejar_inicio(mensaje, from_number)
+        elif estado in ["preguntando_nombre", "agendando_cita", "confirmacion_cita"]:
+            respuesta = manejar_agendamiento(mensaje, from_number)
+        else:
+            respuesta = "Ocurrió un error. Por favor envía 'hola' para reiniciar."
+        
+        # Enviar respuesta
         twiml = MessagingResponse()
         twiml.message(respuesta)
         return Response(str(twiml), content_type='text/xml')
@@ -335,12 +221,12 @@ def webhook():
     except Exception as e:
         print(f"Error en webhook: {e}")
         twiml = MessagingResponse()
-        twiml.message("⚠️ Error temporal. Por favor, intenta de nuevo.")
+        twiml.message("⚠️ Error temporal. Por favor intenta de nuevo.")
         return Response(str(twiml), content_type='text/xml')
 
 @app.route('/')
-def index():
-    return "Chatbot Barbería d' Leo - En funcionamiento"
+def home():
+    return "Chatbot Barbería d' Leo - Operativo"
 
 if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=10000)
+    app.run(host='0.0.0.0', port=10000)
