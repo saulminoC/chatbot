@@ -1,214 +1,186 @@
 import os
 from datetime import timedelta, datetime
-from openai import OpenAI
 from flask import Flask, request, Response
 from dotenv import load_dotenv
 import dateparser
 from twilio.twiml.messaging_response import MessagingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
-# Cargar variables de entorno
+# Configuración inicial
 load_dotenv()
-
-# Inicializar Flask
 app = Flask(__name__)
 
-# Configurar OpenAI
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
-# Configurar Google Calendar
-SCOPES = ['https://www.googleapis.com/auth/calendar']
-SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
-
-# Constantes de negocio
-HORARIO_ATENCION = "de lunes a sábado de 8:00 a 17:00"
-HORA_APERTURA = 8  # 8 am
-HORA_CIERRE = 17   # 5 pm
+# Constantes del negocio
+HORARIO = "de lunes a sábado de 8:00 a 17:00"
+HORA_APERTURA = 8
+HORA_CIERRE = 17
 
 SERVICIOS = {
     "corte de cabello": {"precio": "100 MXN", "duracion": 30},
     "afeitado": {"precio": "500 MXN", "duracion": 45},
     "diseño de barba": {"precio": "150 MXN", "duracion": 30},
-    "tratamiento capilar": {"precio": "200 MXN", "duracion": 60},
+    "tratamiento capilar": {"precio": "200 MXN", "duracion": 60}
 }
 
 # Estados de conversación
-estado_conversacion = {}
+conversaciones = {}
 
 def get_calendar_service():
     creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json'),
+        scopes=['https://www.googleapis.com/auth/calendar']
+    )
     return build('calendar', 'v3', credentials=creds)
 
-def extraer_fecha_hora(mensaje):
-    """Extrae fecha/hora con mejor manejo de formatos"""
+def parsear_fecha(texto):
     try:
-        settings = {
-            'PREFER_DATES_FROM': 'future',
-            'RELATIVE_BASE': datetime.now(),
-            'TIMEZONE': 'America/Mexico_City',
-            'RETURN_AS_TIMEZONE_AWARE': True
-        }
-        return dateparser.parse(mensaje, settings=settings)
-    except Exception as e:
-        print(f"Error al parsear fecha: {e}")
+        return dateparser.parse(
+            texto,
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now(),
+                'TIMEZONE': 'America/Mexico_City',
+                'RETURN_AS_TIMEZONE_AWARE': True
+            }
+        )
+    except:
         return None
 
-def validar_fecha_hora(fecha):
-    """Valida fecha considerando horario de atención"""
+def validar_fecha(fecha):
     ahora = datetime.now().astimezone()
     
     if not fecha:
-        return False, "No entendí la fecha/hora. Ej: 'Jueves a las 4pm'"
-    
-    if not hasattr(fecha, 'tzinfo') or fecha.tzinfo is None:
-        fecha = fecha.replace(tzinfo=ahora.tzinfo)
+        return False, "No entendí la fecha. Ejemplo: 'Mañana a las 10am'"
     
     if fecha < ahora - timedelta(minutes=30):
-        return False, "Esa hora ya pasó. ¿Quisiste decir otro día?"
+        return False, "Esa hora ya pasó. ¿Podrías indicar una hora futura?"
     
     if fecha.weekday() >= 6:
         return False, "Solo trabajamos de lunes a sábado."
     
     if fecha.hour < HORA_APERTURA or fecha.hour >= HORA_CIERRE:
-        return False, f"Horario: {HORA_APERTURA}am-{HORA_CIERRE-12}pm. ¿Otra hora?"
+        return False, f"Nuestro horario es de {HORA_APERTURA}am a {HORA_CIERRE-12}pm"
     
     return True, None
 
-def manejar_inicio(mensaje, from_number):
-    mensaje_lower = mensaje.lower()
-    
-    if any(palabra in mensaje_lower for palabra in ["hola", "buenos días", "buenas tardes"]):
-        estado_conversacion[from_number] = {"estado": "inicio"}
-        return (f"¡Hola! 👋 Soy el asistente de Barbería d' Leo.\n\n"
-                f"Puedo ayudarte con:\n"
-                f"• 📋 Servicios\n"
-                f"• 💰 Precios\n"
-                f"• 🗓️ Agendar cita\n\n"
-                f"Horario: {HORARIO_ATENCION}")
-    
-    elif any(palabra in mensaje_lower for palabra in ["servicios", "precios"]):
-        estado_conversacion[from_number] = {"estado": "seleccion_servicio"}
-        return ("💈 Servicios:\n\n" +
-                "\n".join([f"• {k.capitalize()}: {v['precio']} ({v['duracion']} min)" 
-                          for k, v in SERVICIOS.items()]) +
-                "\n\nResponde con el servicio que deseas.")
-    
-    return "Envía 'hola' para comenzar."
-
-def manejar_servicio(mensaje, from_number):
-    mensaje_lower = mensaje.lower()
-    
-    if mensaje_lower in SERVICIOS:
-        estado_conversacion[from_number] = {
-            "estado": "preguntando_nombre",
-            "servicio": mensaje_lower
-        }
-        return f"¿Cómo te llamas para agendar tu {mensaje_lower}?"
-    return "Servicio no válido. Elige uno de la lista."
-
-def manejar_nombre(mensaje, from_number):
-    estado_conversacion[from_number].update({
-        "estado": "agendando_cita",
-        "nombre": mensaje.title(),
-        "intentos_fecha": 0
-    })
-    return (f"Gracias, {mensaje.title()}. ¿Para qué día y hora quieres tu " +
-            f"{estado_conversacion[from_number]['servicio']}?\n" +
-            f"Ej: 'Mañana a las 10am' o 'Jueves 27 a las 4pm'")
-
-def manejar_cita(mensaje, from_number):
-    estado = estado_conversacion[from_number]
-    fecha = extraer_fecha_hora(mensaje)
-    valido, error = validar_fecha_hora(fecha)
-    
-    if not valido:
-        estado["intentos_fecha"] += 1
-        if estado["intentos_fecha"] >= 2:
-            return f"{error}\n\n¿Necesitas ayuda? Llama al 555-1234."
-        return f"{error}\n\nPor favor, ingresa otra fecha/hora:"
-    
-    estado.update({
-        "estado": "confirmacion_cita",
-        "fecha": fecha
-    })
-    return (f"📅 Confirmación:\n\n"
-            f"• Cliente: {estado['nombre']}\n"
-            f"• Servicio: {estado['servicio'].capitalize()}\n"
-            f"• Fecha: {fecha.strftime('%A %d/%m')}\n"
-            f"• Hora: {fecha.strftime('%I:%M %p')}\n\n"
-            f"¿Es correcto? Responde 'sí' o 'no'.")
-
-def manejar_confirmacion(mensaje, from_number):
-    estado = estado_conversacion[from_number]
-    
-    if mensaje.lower() in ["sí", "si", "confirmar"]:
-        try:
-            event = {
-                'summary': f"Cita: {estado['nombre']} - {estado['servicio']}",
-                'start': {'dateTime': estado['fecha'].isoformat(), 'timeZone': 'America/Mexico_City'},
-                'end': {'dateTime': (estado['fecha'] + timedelta(minutes=SERVICIOS[estado['servicio']]['duracion'])).isoformat(),
-                        'timeZone': 'America/Mexico_City'},
-                'reminders': {'useDefault': True}
-            }
-            service = get_calendar_service()
-            service.events().insert(calendarId='primary', body=event).execute()
-            
-            respuesta = (f"✅ ¡Listo! Tu cita está agendada:\n"
-                        f"📅 {estado['fecha'].strftime('%A %d/%m a las %I:%M %p')}\n\n"
-                        f"📍 Av. Principal 123\n"
-                        f"📞 555-1234")
-            
-            del estado_conversacion[from_number]
-            return respuesta
-            
-        except Exception as e:
-            print(f"Error al agendar: {e}")
-            return "❌ Error al agendar. Por favor llama al 555-1234."
-    
-    estado["estado"] = "agendando_cita"
-    return "Entendido. ¿Qué nueva fecha/hora prefieres?"
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    mensaje = request.form.get('Body', '').strip()
-    from_number = request.form.get('From')
+    mensaje = request.form.get('Body', '').strip().lower()
+    remitente = request.form.get('From')
     
-    if not mensaje or not from_number:
-        return "Mensaje inválido", 400
+    if not remitente in conversaciones:
+        conversaciones[remitente] = {'estado': 'inicio'}
+    
+    estado = conversaciones[remitente]['estado']
     
     try:
-        # Reiniciar si no existe estado
-        if from_number not in estado_conversacion:
-            estado_conversacion[from_number] = {"estado": "inicio"}
+        # Flujo de conversación principal
+        if estado == 'inicio':
+            if any(saludo in mensaje for saludo in ['hola', 'buenos días', 'buenas tardes']):
+                respuesta = (
+                    "¡Hola! 👋 Soy el asistente de Barbería d' Leo.\n\n"
+                    "Puedo ayudarte con:\n"
+                    "• 📋 Servicios\n"
+                    "• 💰 Precios\n"
+                    "• 🗓️ Agendar cita\n\n"
+                    f"Horario: {HORARIO}"
+                )
+            elif 'servicios' in mensaje or 'precios' in mensaje:
+                conversaciones[remitente]['estado'] = 'listando_servicios'
+                respuesta = (
+                    "💈 Servicios disponibles:\n\n" +
+                    "\n".join([f"• {k.capitalize()}: {v['precio']} ({v['duracion']} min)" 
+                             for k, v in SERVICIOS.items()]) +
+                    "\n\nResponde con el servicio que deseas."
+                )
+            else:
+                respuesta = "Envía 'servicios' para ver nuestras opciones o 'agendar' para una cita."
         
-        estado = estado_conversacion[from_number]["estado"]
+        elif estado == 'listando_servicios':
+            if mensaje in SERVICIOS:
+                conversaciones[remitente].update({
+                    'estado': 'solicitando_nombre',
+                    'servicio': mensaje
+                })
+                respuesta = f"¿Cómo te llamas para agendar tu {mensaje}?"
+            else:
+                respuesta = "Por favor elige un servicio de la lista."
         
-        # Manejar flujo
-        if estado == "inicio":
-            respuesta = manejar_inicio(mensaje, from_number)
-        elif estado == "seleccion_servicio":
-            respuesta = manejar_servicio(mensaje, from_number)
-        elif estado == "preguntando_nombre":
-            respuesta = manejar_nombre(mensaje, from_number)
-        elif estado == "agendando_cita":
-            respuesta = manejar_cita(mensaje, from_number)
-        elif estado == "confirmacion_cita":
-            respuesta = manejar_confirmacion(mensaje, from_number)
+        elif estado == 'solicitando_nombre':
+            conversaciones[remitente].update({
+                'estado': 'solicitando_fecha',
+                'nombre': mensaje.title()
+            })
+            respuesta = (
+                f"Gracias, {mensaje.title()}. ¿Para qué día y hora quieres tu "
+                f"{conversaciones[remitente]['servicio']}?\n"
+                "Ejemplos:\n• Mañana a las 10am\n• Viernes a las 3pm"
+            )
+        
+        elif estado == 'solicitando_fecha':
+            fecha = parsear_fecha(mensaje)
+            valido, error = validar_fecha(fecha)
+            
+            if valido:
+                conversaciones[remitente].update({
+                    'estado': 'confirmando_cita',
+                    'fecha': fecha
+                })
+                respuesta = (
+                    f"📅 Confirmación:\n\n"
+                    f"• Servicio: {conversaciones[remitente]['servicio'].capitalize()}\n"
+                    f"• Fecha: {fecha.strftime('%A %d/%m')}\n"
+                    f"• Hora: {fecha.strftime('%I:%M %p')}\n\n"
+                    f"¿Es correcto? Responde 'sí' para confirmar."
+                )
+            else:
+                respuesta = f"{error}\n\nPor favor ingresa otra fecha/hora:"
+        
+        elif estado == 'confirmando_cita':
+            if mensaje in ['sí', 'si', 'confirmar']:
+                try:
+                    servicio = get_calendar_service()
+                    evento = {
+                        'summary': f"Cita: {conversaciones[remitente]['nombre']}",
+                        'description': f"Servicio: {conversaciones[remitente]['servicio']}",
+                        'start': {
+                            'dateTime': conversaciones[remitente]['fecha'].isoformat(),
+                            'timeZone': 'America/Mexico_City',
+                        },
+                        'end': {
+                            'dateTime': (conversaciones[remitente]['fecha'] + 
+                                       timedelta(minutes=SERVICIOS[conversaciones[remitente]['servicio']]['duracion'])).isoformat(),
+                            'timeZone': 'America/Mexico_City',
+                        }
+                    }
+                    servicio.events().insert(calendarId='primary', body=evento).execute()
+                    
+                    respuesta = (
+                        "✅ ¡Cita agendada con éxito!\n\n"
+                        f"📅 {conversaciones[remitente]['fecha'].strftime('%A %d/%m a las %I:%M %p')}\n"
+                        f"💈 Servicio: {conversaciones[remitente]['servicio'].capitalize()}\n\n"
+                        "📍 Av. Principal 123\n"
+                        "📞 Tel: 555-1234\n\n"
+                        "Te esperamos en tu cita."
+                    )
+                    del conversaciones[remitente]
+                except Exception as e:
+                    respuesta = "❌ Error al agendar. Por favor llama al 555-1234."
+            else:
+                conversaciones[remitente]['estado'] = 'solicitando_fecha'
+                respuesta = "Entendido. ¿Qué nueva fecha prefieres?"
+        
         else:
-            respuesta = "Envía 'hola' para comenzar."
+            respuesta = "Envía 'hola' para reiniciar la conversación."
         
+        # Enviar respuesta
         twiml = MessagingResponse()
         twiml.message(respuesta)
         return Response(str(twiml), content_type='text/xml')
     
     except Exception as e:
-        print(f"Error en webhook: {e}")
-        # Reiniciar conversación en caso de error
-        if from_number in estado_conversacion:
-            del estado_conversacion[from_number]
+        print(f"Error: {e}")
         twiml = MessagingResponse()
         twiml.message("Ocurrió un error. Por favor envía 'hola' para reiniciar.")
         return Response(str(twiml), content_type='text/xml')
