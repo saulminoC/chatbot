@@ -82,35 +82,55 @@ def obtener_respuesta_openai(mensaje, from_number=None):
         return "Disculpa, estoy teniendo dificultades. ¿Podrías repetir o llamar al 555-1234?"
 
 def extraer_fecha_hora(mensaje):
-    """Extrae fecha y hora usando OpenAI y dateparser como respaldo"""
+    """Extrae fecha y hora con mejor manejo de fechas futuras"""
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Extrae fecha y hora en formato ISO. Si no hay, responde 'No'."},
-                {"role": "user", "content": mensaje}
-            ]
+        # Primero intenta con dateparser configurado para fechas futuras
+        fecha = dateparser.parse(
+            mensaje,
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now()
+            }
         )
-        fecha_hora = response.choices[0].message.content.strip()
-        return dateparser.parse(fecha_hora) if fecha_hora.lower() != "no" else None
-    except:
-        return dateparser.parse(mensaje)
+        
+        # Si no funciona, usa OpenAI como respaldo
+        if not fecha:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "Extrae fecha y hora en formato YYYY-MM-DD HH:MM. Asegúrate que sea fecha futura."},
+                    {"role": "user", "content": mensaje}
+                ]
+            )
+            fecha_str = response.choices[0].message.content.strip()
+            fecha = dateparser.parse(fecha_str)
+        
+        return fecha
+    except Exception as e:
+        print(f"Error al extraer fecha: {e}")
+        return None
 
 def validar_fecha_hora(fecha):
-    """Valida que la fecha sea adecuada"""
+    """Valida que la fecha sea adecuada y futura"""
     ahora = datetime.now()
     
-    if fecha < ahora - timedelta(hours=1):
-        return False, "Esa fecha ya pasó. ¿Podrías indicar una futura?"
+    if not fecha:
+        return False, "No entendí la fecha. ¿Podrías ser más específico? Ej: '25 de junio a las 2pm'"
     
+    # Primero verifica que sea fecha futura (con margen de 1 hora)
+    if fecha < (ahora - timedelta(hours=1)):
+        # Verifica si el usuario puso una fecha pasada pero quiso decir del próximo año
+        fecha_proximo_ano = fecha.replace(year=ahora.year + 1)
+        if fecha_proximo_ano > ahora:
+            return True, None  # Acepta como fecha válida
+        return False, "Parece que esa fecha ya pasó. ¿Quisiste decir un día futuro? Por ejemplo: 'Viernes próximo a las 12pm'"
+    
+    # Resto de validaciones (día y horario)
     if fecha.weekday() >= 6:
-        return False, "Solo trabajamos de lunes a sábado."
+        return False, "Lo siento, solo trabajamos de lunes a sábado."
     
     if fecha.hour < 8 or fecha.hour >= 17:
-        return False, f"Nuestro horario es de 8:00 a 17:00. ¿Otra hora?"
-    
-    if fecha < ahora + timedelta(hours=1):
-        return False, "Necesitamos al menos 1 hora de anticipación."
+        return False, f"Nuestro horario es de 8:00 a 17:00. ¿Podrías elegir otra hora entre ese rango?"
     
     return True, None
 
@@ -180,28 +200,39 @@ def manejar_nombre(mensaje, from_number):
             f"Ejemplo: 'Mañana a las 10am' o 'Viernes 15 a las 3pm'")
 
 def manejar_cita(mensaje, from_number):
-    """Maneja el agendamiento de cita"""
+    """Maneja el agendamiento de cita con mejores mensajes de error"""
     fecha = extraer_fecha_hora(mensaje)
     
     if not fecha:
-        return "No entendí la fecha. ¿Podrías ser más específico? Ej: '25 de junio a las 2pm'"
+        return ("No pude entender la fecha. Por favor escribe algo como:\n"
+                "'Viernes a las 3pm'\n"
+                "'15 de julio a las 11am'\n"
+                "'Mañana a las 10'")
     
     es_valida, mensaje_error = validar_fecha_hora(fecha)
     if not es_valida:
-        return mensaje_error
+        estado_conversacion[from_number]["intentos_fecha"] = estado_conversacion[from_number].get("intentos_fecha", 0) + 1
+        
+        if estado_conversacion[from_number]["intentos_fecha"] >= 2:
+            return (f"{mensaje_error}\n\n¿Prefieres que te llame un asesor humano? "
+                    "Responde 'sí' para transferir o escribe otra fecha.")
+        
+        return f"{mensaje_error}\n\nPor favor, ingresa otra fecha y hora:"
     
+    # Si la fecha es válida
     estado_conversacion[from_number].update({
         "estado": "confirmacion_cita",
-        "fecha": fecha
+        "fecha": fecha,
+        "intentos_fecha": 0  # Resetear contador de intentos
     })
     
     return (f"📅 Confirmación de cita:\n\n"
             f"• Cliente: {estado_conversacion[from_number]['nombre']}\n"
             f"• Servicio: {estado_conversacion[from_number]['servicio'].capitalize()}\n"
             f"• Fecha: {fecha.strftime('%A %d/%m/%Y')}\n"
-            f"• Hora: {fecha.strftime('%H:%M')}\n\n"
-            f"¿Es correcto? Responde 'sí' para confirmar o 'no' para cambiar.")
-
+            f"• Hora: {fecha.strftime('%I:%M %p')}\n\n"
+            f"¿Todo correcto? Responde 'sí' para confirmar o 'no' para cambiar.")
+    
 def manejar_confirmacion(mensaje, from_number):
     """Maneja la confirmación final"""
     mensaje_lower = mensaje.lower()
