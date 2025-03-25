@@ -113,6 +113,12 @@ def webhook():
             elif 'servicio' in mensaje or 'precio' in mensaje:
                 conversaciones[remitente]['estado'] = 'listando_servicios'
                 respuesta = mostrar_servicios()
+            elif 'agendar' in mensaje or 'cita' in mensaje:
+                conversaciones[remitente]['estado'] = 'listando_servicios'
+                respuesta = (
+                    "Perfecto, vamos a agendar tu cita. Primero elige un servicio:\n\n" +
+                    mostrar_servicios()
+                )
             else:
                 respuesta = (
                     "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
@@ -131,6 +137,8 @@ def webhook():
                 respuesta = f"✍️ ¿Cómo te llamas para agendar tu *{mensaje}*?"
             elif 'servicio' in mensaje or 'precio' in mensaje:
                 respuesta = mostrar_servicios()
+            elif 'agendar' in mensaje or 'cita' in mensaje:
+                respuesta = "Por favor elige primero un servicio:\n\n" + mostrar_servicios()
             else:
                 respuesta = (
                     "No reconozco ese servicio. Por favor elige uno:\n\n" +
