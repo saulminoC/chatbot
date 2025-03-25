@@ -85,31 +85,16 @@ def webhook():
     estado_actual = conversaciones[remitente]['estado']
     
     try:
-        # Manejo de intentos repetidos
-        if mensaje == conversaciones[remitente].get('ultimo_mensaje'):
-            conversaciones[remitente]['intentos'] += 1
-        else:
-            conversaciones[remitente]['intentos'] = 0
-        
-        conversaciones[remitente]['ultimo_mensaje'] = mensaje
-        
-        # Si repite muchas veces, ofrecer ayuda
-        if conversaciones[remitente]['intentos'] >= 2:
-            if estado_actual == 'listando_servicios':
+        # Manejo de "hola" en cualquier estado
+        if any(saludo in mensaje for saludo in ['hola', 'buenos días', 'buenas tardes']):
+            if estado_actual != 'inicio':
+                conversaciones[remitente] = {'estado': 'inicio'}
                 return Response(
                     str(MessagingResponse().message(
-                        "¿Necesitas ayuda para elegir? Te recomiendo:\n\n"
-                        "✂️ *Corte de cabello*: Ideal para un look renovado\n"
-                        "🧔 *Diseño de barba*: Para un acabado perfecto\n\n"
-                        "¿Cuál prefieres?"
-                    )),
-                    content_type='text/xml'
-                )
-            else:
-                return Response(
-                    str(MessagingResponse().message(
-                        "¿Te gustaría hablar con un asistente humano? "
-                        "Responde 'asesor' o intenta nuevamente."
+                        "Hemos reiniciado la conversación. ¿En qué puedo ayudarte?\n\n"
+                        "📋 Servicios\n"
+                        "🗓️ Agendar cita\n"
+                        "📍 Ubicación"
                     )),
                     content_type='text/xml'
                 )
@@ -154,7 +139,7 @@ def webhook():
                 )
         
         elif estado_actual == 'solicitando_nombre':
-            if len(mensaje.split()) >= 2:  # Nombre y apellido
+            if len(mensaje.split()) >= 1:  # Aceptar al menos un nombre
                 conversaciones[remitente].update({
                     'estado': 'solicitando_fecha',
                     'nombre': mensaje.title()
@@ -168,7 +153,7 @@ def webhook():
                     "• 15 de abril a las 11"
                 )
             else:
-                respuesta = "Por favor escribe tu *nombre completo* (nombre y apellido)"
+                respuesta = "Por favor escribe tu nombre para continuar"
         
         elif estado_actual == 'solicitando_fecha':
             fecha = parsear_fecha(mensaje)
