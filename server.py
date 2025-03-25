@@ -106,7 +106,7 @@ def mostrar_servicios():
     servicios_texto = "💈 *Servicios disponibles* 💈\n\n"
     for servicio, detalles in SERVICIOS.items():
         servicios_texto += f"• ✂️ {servicio.capitalize()}: {detalles['precio']} ({detalles['duracion']} min)\n"
-    servicios_texto += "\n_Responde con el nombre del servicio que deseas_"
+    servicios_texto += "\n_Responde con el nombre exacto del servicio que deseas_"
     return servicios_texto
 
 def crear_evento_calendario(datos_cita):
@@ -145,10 +145,17 @@ def crear_evento_calendario(datos_cita):
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    mensaje = request.form.get('Body', '').strip().lower()
-    remitente = request.form.get('From')
+    # Verificar que la solicitud viene de Twilio
+    if request.method != 'POST':
+        return Response("Método no permitido", status=405)
     
-    # Inicializar respuesta
+    # Obtener datos del mensaje
+    mensaje = request.values.get('Body', '').strip().lower()
+    remitente = request.values.get('From', '')
+    
+    print(f"Mensaje recibido: {mensaje}")  # Log para depuración
+    
+    # Inicializar respuesta Twilio
     resp = MessagingResponse()
     
     # Manejo de saludos iniciales
@@ -160,18 +167,20 @@ def webhook():
             "* 'servicios' para ver opciones\n"
             "* 'agendar' para reservar cita"
         )
-        return Response(str(resp), content_type='text/xml')
+        return Response(str(resp), content_type='application/xml')
     
     # Inicializar conversación si es nuevo
     if remitente not in conversaciones:
         conversaciones[remitente] = {'estado': 'inicio'}
     
-    estado_actual = conversaciones[remitente]['estado']
+    estado_actual = conversaciones[remitente].get('estado', 'inicio')
     
     try:
         # Flujo principal de conversación
         if estado_actual == 'inicio':
-            if 'servicio' in mensaje or 'precio' in mensaje or 'qué hacen' in mensaje or 'servicios' in mensaje:
+            if ('servicio' in mensaje or 'precio' in mensaje or 
+                'qué hacen' in mensaje or 'servicios' in mensaje or
+                'cuales son tus servicios' in mensaje):
                 conversaciones[remitente]['estado'] = 'listando_servicios'
                 resp.message(mostrar_servicios())
             elif 'agendar' in mensaje or 'cita' in mensaje or 'reservar' in mensaje:
@@ -185,7 +194,8 @@ def webhook():
                     "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
                     "Puedes preguntar por:\n"
                     "* 'servicios' para ver opciones\n"
-                    "* 'agendar' para reservar cita"
+                    "* 'agendar' para reservar cita\n\n"
+                    "Por favor escribe una de estas opciones."
                 )
         
         elif estado_actual == 'listando_servicios':
@@ -206,20 +216,21 @@ def webhook():
                 )
         
         # Resto del flujo de conversación (solicitando_nombre, solicitando_fecha, confirmando_cita)
-        # ... (mantener el mismo código que en la versión anterior)
+        # ... (similar al código anterior)
         
-        return Response(str(resp), content_type='text/xml')
+        print(f"Respuesta a enviar: {str(resp)}")  # Log para depuración
+        return Response(str(resp), content_type='application/xml')
     
     except Exception as e:
         print(f"Error en webhook: {e}")
         if remitente in conversaciones:
             del conversaciones[remitente]
         resp.message("🔧 Ocurrió un error inesperado. Por favor envía 'hola' para comenzar de nuevo.")
-        return Response(str(resp), content_type='text/xml')
+        return Response(str(resp), content_type='application/xml')
 
 @app.route('/')
 def home():
     return "Chatbot Barbería d' Leo - Servicio activo"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000, debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
