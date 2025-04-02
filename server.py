@@ -269,35 +269,6 @@ def parsear_fecha(texto):
         logger.error(f"Error al parsear fecha '{texto}': {e}", exc_info=True)
         return None
 
-# Modificación a la función verificar_disponibilidad para manejar errores de calendario
-def verificar_disponibilidad(fecha, duracion_minutos):
-    """Verifica disponibilidad en el calendario"""
-    service = get_calendar_service()
-    if not service:
-        logger.warning("No se pudo conectar al servicio de calendario - asumiendo disponibilidad")
-        # En modo fallback, asumimos que la hora está disponible
-        return True, None
-    
-    try:
-        tiempo_fin = fecha + timedelta(minutes=duracion_minutos)
-        
-        eventos = service.events().list(
-            calendarId='primary',
-            timeMin=fecha.isoformat(),
-            timeMax=tiempo_fin.isoformat(),
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        
-        return len(eventos.get('items', [])) == 0, None
-    except HttpError as e:
-        logger.error(f"Error al verificar disponibilidad: {e}")
-        # En caso de error, asumimos disponibilidad pero registramos el problema
-        return True, None
-    except Exception as e:
-        logger.error(f"Error inesperado al verificar disponibilidad: {e}", exc_info=True)
-        return True, None
-
 def validar_fecha(fecha):
     """Valida si una fecha es adecuada para agendar cita"""
     ahora = datetime.now(TIMEZONE)
