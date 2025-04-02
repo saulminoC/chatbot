@@ -100,49 +100,113 @@ def get_calendar_service():
         return None
 
 def parsear_fecha(texto):
-    """Intenta parsear una fecha a partir de texto natural"""
+    """Intenta parsear una fecha a partir de texto natural con soporte extendido para español"""
     try:
-        # Detectar referencias a "mañana" en español y convertirlas
-        texto_procesado = texto.lower()
-        if "mañana" in texto_procesado:
-            # Reemplazar con fecha explícita de mañana
-            manana = datetime.now(TIMEZONE) + timedelta(days=1)
-            # Extraer la hora del texto original
-            partes = texto_procesado.split("a las")
-            if len(partes) > 1:
-                hora_texto = partes[1].strip()
-                if "am" in hora_texto:
-                    hora = hora_texto.replace("am", "").strip()
-                    try:
-                        hora = int(hora)
-                        return manana.replace(hour=hora, minute=0)
-                    except:
-                        pass
-                elif "pm" in hora_texto:
-                    hora = hora_texto.replace("pm", "").strip()
-                    try:
-                        hora = int(hora)
-                        return manana.replace(hour=hora+12 if hora < 12 else hora, minute=0)
-                    except:
-                        pass
+        texto_original = texto
+        texto = texto.lower()
         
-        # Si no se pudo procesar manualmente, usar dateparser
-        parsed = dateparser.parse(
-            texto,
-            settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now(TIMEZONE),
-                'TIMEZONE': 'America/Mexico_City',
-                'RETURN_AS_TIMEZONE_AWARE': True,
-                'LANGUAGES': ['es']
-            }
-        )
+        # Pre-procesamiento para mejorar el reconocimiento
+        # Traducir referencias comunes en español
+        reemplazos = {
+            'mañana': 'tomorrow',
+            'pasado mañana': 'day after tomorrow',
+            'hoy': 'today',
+            'próximo': 'next',
+            'proximo': 'next',
+            'siguiente': 'next',
+            'este': 'this',
+            'de la tarde': 'pm',
+            'de la mañana': 'am',
+            'de la noche': 'pm',
+            'del medio día': '12pm',
+            'medio día': '12pm',
+            'mediodia': '12pm',
+            'mediodía': '12pm'
+        }
+        
+        for esp, eng in reemplazos.items():
+            texto = texto.replace(esp, eng)
+        
+        # Manejo específico de fechas en formato español DD/MM/YY o DD/MM/YYYY
+        import re
+        fecha_regex = r'(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})'
+        match = re.search(fecha_regex, texto)
+        if match:
+            dia, mes, anio = match.groups()
+            # Convertir a formato ISO para dateparser
+            if len(anio) == 2:
+                anio = '20' + anio  # Asumir años 2000+
+            fecha_iso = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+            
+            # Extraer la hora si existe
+            hora_match = re.search(r'a las (\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?', texto, re.IGNORECASE)
+            if hora_match:
+                hora, minuto, ampm = hora_match.groups()
+                hora = int(hora)
+                minuto = int(minuto) if minuto else 0
+                
+                if ampm and ampm.lower() == 'pm' and hora < 12:
+                    hora += 12
+                
+                fecha_iso += f"T{hora:02d}:{minuto:02d}:00"
+            
+            # Intentar parsear esta fecha ISO
+            parsed = dateparser.parse(
+                fecha_iso,
+                settings={
+                    'RETURN_AS_TIMEZONE_AWARE': True,
+                    'TIMEZONE': 'America/Mexico_City'
+                }
+            )
+            if parsed:
+                return TIMEZONE.localize(parsed) if parsed.tzinfo is None else parsed
+        
+        # Para expresiones como "el viernes a las 3pm"
+        dia_semana_match = re.search(r'(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)', texto)
+        if dia_semana_match:
+            dia_semana = dia_semana_match.group(1)
+            dia_semana_en = {
+                'lunes': 'monday', 
+                'martes': 'tuesday', 
+                'miércoles': 'wednesday', 
+                'miercoles': 'wednesday',
+                'jueves': 'thursday', 
+                'viernes': 'friday', 
+                'sábado': 'saturday', 
+                'sabado': 'saturday',
+                'domingo': 'sunday'
+            }.get(dia_semana)
+            
+            if dia_semana_en:
+                texto = texto.replace(dia_semana, dia_semana_en)
+        
+        # Proceder con dateparser mejorado
+        settings = {
+            'PREFER_DATES_FROM': 'future',
+            'RELATIVE_BASE': datetime.now(TIMEZONE),
+            'TIMEZONE': 'America/Mexico_City',
+            'RETURN_AS_TIMEZONE_AWARE': True,
+            'LANGUAGES': ['es', 'en']  # Soporte bilingüe
+        }
+        
+        parsed = dateparser.parse(texto, settings=settings)
+        
+        # Si el parseo falló, intentar con el texto original
+        if not parsed:
+            parsed = dateparser.parse(texto_original, settings=settings)
+        
+        # Asegurarse de que tenga zona horaria
         if parsed and parsed.tzinfo is None:
             parsed = TIMEZONE.localize(parsed)
+        
+        # Registrar el resultado para depuración
+        logger.info(f"Texto fecha: '{texto_original}' -> '{texto}' = {parsed}")
+        
         return parsed
     except Exception as e:
-        logger.error(f"Error al parsear fecha: {e}")
+        logger.error(f"Error al parsear fecha '{texto}': {e}", exc_info=True)
         return None
+
 def validar_fecha(fecha):
     """Valida si una fecha es adecuada para agendar cita"""
     ahora = datetime.now(TIMEZONE)
