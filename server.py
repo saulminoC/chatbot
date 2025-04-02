@@ -100,112 +100,203 @@ def get_calendar_service():
         return None
 
 def parsear_fecha(texto):
-    """Intenta parsear una fecha a partir de texto natural con soporte extendido para español"""
+    """Intenta parsear una fecha a partir de texto natural con implementación personalizada para español"""
+    from datetime import datetime, timedelta
+    import re
+    import calendar
+    
+    logger.info(f"Intentando parsear fecha: '{texto}'")
+    
+    texto = texto.lower().strip()
+    ahora = datetime.now(TIMEZONE)
+    resultado = None
+    
     try:
-        texto_original = texto
-        texto = texto.lower()
+        # 1. Patrones comunes en formato específico
         
-        # Pre-procesamiento para mejorar el reconocimiento
-        # Traducir referencias comunes en español
-        reemplazos = {
-            'mañana': 'tomorrow',
-            'pasado mañana': 'day after tomorrow',
-            'hoy': 'today',
-            'próximo': 'next',
-            'proximo': 'next',
-            'siguiente': 'next',
-            'este': 'this',
-            'de la tarde': 'pm',
-            'de la mañana': 'am',
-            'de la noche': 'pm',
-            'del medio día': '12pm',
-            'medio día': '12pm',
-            'mediodia': '12pm',
-            'mediodía': '12pm'
+        # Patrón: "mañana a las X(am/pm)"
+        patron_manana = r'ma[ñn]ana (?:a las?\s+)?(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?'
+        match = re.search(patron_manana, texto)
+        if match:
+            hora, minuto, ampm = match.groups()
+            hora = int(hora)
+            minuto = int(minuto) if minuto else 0
+            
+            if ampm and ampm.lower() == 'pm' and hora < 12:
+                hora += 12
+            
+            resultado = ahora + timedelta(days=1)
+            resultado = resultado.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+            logger.info(f"🔍 Fecha parseada usando patrón 'mañana': {resultado}")
+            return resultado
+        
+        # Patrón: "día de la semana a las X(am/pm)" - ej: "jueves a las 4pm"
+        dias_semana = {
+            'lunes': 0, 'martes': 1, 'miercoles': 2, 'miércoles': 2, 
+            'jueves': 3, 'viernes': 4, 'sabado': 5, 'sábado': 5, 'domingo': 6
         }
         
-        for esp, eng in reemplazos.items():
-            texto = texto.replace(esp, eng)
-        
-        # Manejo específico de fechas en formato español DD/MM/YY o DD/MM/YYYY
-        import re
-        fecha_regex = r'(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})'
-        match = re.search(fecha_regex, texto)
-        if match:
-            dia, mes, anio = match.groups()
-            # Convertir a formato ISO para dateparser
-            if len(anio) == 2:
-                anio = '20' + anio  # Asumir años 2000+
-            fecha_iso = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
-            
-            # Extraer la hora si existe
-            hora_match = re.search(r'a las (\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?', texto, re.IGNORECASE)
-            if hora_match:
-                hora, minuto, ampm = hora_match.groups()
+        for dia, num_dia in dias_semana.items():
+            patron_dia = f"(?:el\s+)?{dia}\s+(?:a las?\s+)?(\d{{1,2}})(?::(\d{{1,2}}))?\s*(am|pm|de la tarde|de la mañana)?"
+            match = re.search(patron_dia, texto)
+            if match:
+                hora, minuto, periodo = match.groups()
                 hora = int(hora)
                 minuto = int(minuto) if minuto else 0
                 
-                if ampm and ampm.lower() == 'pm' and hora < 12:
-                    hora += 12
+                # Determinar AM/PM
+                if periodo:
+                    periodo = periodo.lower()
+                    if any(p in periodo for p in ['pm', 'tarde']) and hora < 12:
+                        hora += 12
                 
-                fecha_iso += f"T{hora:02d}:{minuto:02d}:00"
-            
-            # Intentar parsear esta fecha ISO
-            parsed = dateparser.parse(
-                fecha_iso,
-                settings={
-                    'RETURN_AS_TIMEZONE_AWARE': True,
-                    'TIMEZONE': 'America/Mexico_City'
-                }
-            )
-            if parsed:
-                return TIMEZONE.localize(parsed) if parsed.tzinfo is None else parsed
+                # Calcular el próximo día de la semana que coincida
+                dias_hasta = (num_dia - ahora.weekday()) % 7
+                # Si es el mismo día pero ya pasó la hora, ir a la próxima semana
+                if dias_hasta == 0 and (hora < ahora.hour or (hora == ahora.hour and minuto <= ahora.minute)):
+                    dias_hasta = 7
+                # Si es 0, significa hoy pero queremos ir al próximo
+                if dias_hasta == 0:
+                    dias_hasta = 7
+                
+                resultado = ahora + timedelta(days=dias_hasta)
+                resultado = resultado.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+                logger.info(f"🔍 Fecha parseada usando patrón 'día de semana': {resultado}")
+                return resultado
         
-        # Para expresiones como "el viernes a las 3pm"
-        dia_semana_match = re.search(r'(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)', texto)
-        if dia_semana_match:
-            dia_semana = dia_semana_match.group(1)
-            dia_semana_en = {
-                'lunes': 'monday', 
-                'martes': 'tuesday', 
-                'miércoles': 'wednesday', 
-                'miercoles': 'wednesday',
-                'jueves': 'thursday', 
-                'viernes': 'friday', 
-                'sábado': 'saturday', 
-                'sabado': 'saturday',
-                'domingo': 'sunday'
-            }.get(dia_semana)
+        # Patrón: "hoy a las X(am/pm)"
+        patron_hoy = r'hoy (?:a las?\s+)?(\d{1,2})(?::(\d{1,2}))?\s*(am|pm|de la tarde|de la mañana)?'
+        match = re.search(patron_hoy, texto)
+        if match:
+            hora, minuto, periodo = match.groups()
+            hora = int(hora)
+            minuto = int(minuto) if minuto else 0
             
-            if dia_semana_en:
-                texto = texto.replace(dia_semana, dia_semana_en)
+            # Determinar AM/PM
+            if periodo:
+                periodo = periodo.lower()
+                if any(p in periodo for p in ['pm', 'tarde']) and hora < 12:
+                    hora += 12
+            
+            resultado = ahora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+            
+            # Si la hora ya pasó, sugerir para mañana
+            if resultado < ahora:
+                logger.info(f"La hora de hoy {resultado} ya pasó, ajustando para mañana")
+                resultado = resultado + timedelta(days=1)
+            
+            logger.info(f"🔍 Fecha parseada usando patrón 'hoy': {resultado}")
+            return resultado
         
-        # Proceder con dateparser mejorado
-        settings = {
-            'PREFER_DATES_FROM': 'future',
-            'RELATIVE_BASE': datetime.now(TIMEZONE),
-            'TIMEZONE': 'America/Mexico_City',
-            'RETURN_AS_TIMEZONE_AWARE': True,
-            'LANGUAGES': ['es', 'en']  # Soporte bilingüe
+        # Patrón: "DD/MM(/YY) a las X(am/pm)" - ej: "04/04/25 a las 3pm"
+        patron_fecha = r'(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?\s+(?:a las?\s+)?(\d{1,2})(?::(\d{1,2}))?\s*(am|pm|de la tarde|de la mañana)?'
+        match = re.search(patron_fecha, texto)
+        if match:
+            dia, mes, anio, hora, minuto, periodo = match.groups()
+            dia = int(dia)
+            mes = int(mes)
+            hora = int(hora)
+            minuto = int(minuto) if minuto else 0
+            
+            # Validar mes y día
+            if mes < 1 or mes > 12 or dia < 1 or dia > 31:
+                return None
+            
+            # Determinar año
+            if anio:
+                anio = int(anio)
+                if anio < 100:  # Asumimos 20XX para años de dos dígitos
+                    anio += 2000
+            else:
+                anio = ahora.year
+            
+            # Determinar AM/PM
+            if periodo:
+                periodo = periodo.lower()
+                if any(p in periodo for p in ['pm', 'tarde']) and hora < 12:
+                    hora += 12
+            
+            try:
+                # Crear fecha y validar
+                resultado = ahora.replace(year=anio, month=mes, day=dia, 
+                                          hour=hora, minute=minuto, second=0, microsecond=0)
+                logger.info(f"🔍 Fecha parseada usando patrón 'DD/MM': {resultado}")
+                return resultado
+            except ValueError:
+                # Manejar errores como 30/02/2025
+                logger.warning(f"Fecha inválida: {dia}/{mes}/{anio}")
+                return None
+        
+        # Si todos los patrones fallan, intentar con dateparser como fallback
+        logger.info("Intentando parsear con dateparser como último recurso")
+        
+        # Traducir algunas palabras clave para ayudar a dateparser
+        reemplazos = {
+            'mañana': 'tomorrow',
+            'próximo': 'next',
+            'proximo': 'next',
+            'siguiente': 'next',
+            'de la tarde': 'pm',
+            'de la mañana': 'am',
         }
         
-        parsed = dateparser.parse(texto, settings=settings)
+        texto_traducido = texto
+        for esp, eng in reemplazos.items():
+            texto_traducido = texto_traducido.replace(esp, eng)
         
-        # Si el parseo falló, intentar con el texto original
-        if not parsed:
-            parsed = dateparser.parse(texto_original, settings=settings)
+        resultado = dateparser.parse(
+            texto_traducido,
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': ahora,
+                'TIMEZONE': 'America/Mexico_City',
+                'RETURN_AS_TIMEZONE_AWARE': True,
+                'LANGUAGES': ['es', 'en']
+            }
+        )
         
-        # Asegurarse de que tenga zona horaria
-        if parsed and parsed.tzinfo is None:
-            parsed = TIMEZONE.localize(parsed)
+        if resultado and resultado.tzinfo is None:
+            resultado = TIMEZONE.localize(resultado)
         
-        # Registrar el resultado para depuración
-        logger.info(f"Texto fecha: '{texto_original}' -> '{texto}' = {parsed}")
+        if resultado:
+            logger.info(f"🔍 Fecha parseada con dateparser: {resultado}")
+        else:
+            logger.warning(f"❌ No se pudo parsear la fecha: '{texto}'")
         
-        return parsed
+        return resultado
+        
     except Exception as e:
         logger.error(f"Error al parsear fecha '{texto}': {e}", exc_info=True)
         return None
+
+# Modificación a la función verificar_disponibilidad para manejar errores de calendario
+def verificar_disponibilidad(fecha, duracion_minutos):
+    """Verifica disponibilidad en el calendario"""
+    service = get_calendar_service()
+    if not service:
+        logger.warning("No se pudo conectar al servicio de calendario - asumiendo disponibilidad")
+        # En modo fallback, asumimos que la hora está disponible
+        return True, None
+    
+    try:
+        tiempo_fin = fecha + timedelta(minutes=duracion_minutos)
+        
+        eventos = service.events().list(
+            calendarId='primary',
+            timeMin=fecha.isoformat(),
+            timeMax=tiempo_fin.isoformat(),
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        return len(eventos.get('items', [])) == 0, None
+    except HttpError as e:
+        logger.error(f"Error al verificar disponibilidad: {e}")
+        # En caso de error, asumimos disponibilidad pero registramos el problema
+        return True, None
+    except Exception as e:
+        logger.error(f"Error inesperado al verificar disponibilidad: {e}", exc_info=True)
+        return True, None
 
 def validar_fecha(fecha):
     """Valida si una fecha es adecuada para agendar cita"""
