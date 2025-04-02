@@ -102,7 +102,31 @@ def get_calendar_service():
 def parsear_fecha(texto):
     """Intenta parsear una fecha a partir de texto natural"""
     try:
-        texto = texto.lower().replace('mañana', 'tomorrow')  # Mejora para español
+        # Detectar referencias a "mañana" en español y convertirlas
+        texto_procesado = texto.lower()
+        if "mañana" in texto_procesado:
+            # Reemplazar con fecha explícita de mañana
+            manana = datetime.now(TIMEZONE) + timedelta(days=1)
+            # Extraer la hora del texto original
+            partes = texto_procesado.split("a las")
+            if len(partes) > 1:
+                hora_texto = partes[1].strip()
+                if "am" in hora_texto:
+                    hora = hora_texto.replace("am", "").strip()
+                    try:
+                        hora = int(hora)
+                        return manana.replace(hour=hora, minute=0)
+                    except:
+                        pass
+                elif "pm" in hora_texto:
+                    hora = hora_texto.replace("pm", "").strip()
+                    try:
+                        hora = int(hora)
+                        return manana.replace(hour=hora+12 if hora < 12 else hora, minute=0)
+                    except:
+                        pass
+        
+        # Si no se pudo procesar manualmente, usar dateparser
         parsed = dateparser.parse(
             texto,
             settings={
@@ -119,7 +143,6 @@ def parsear_fecha(texto):
     except Exception as e:
         logger.error(f"Error al parsear fecha: {e}")
         return None
-
 def validar_fecha(fecha):
     """Valida si una fecha es adecuada para agendar cita"""
     ahora = datetime.now(TIMEZONE)
