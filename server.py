@@ -294,11 +294,14 @@ def validar_fecha(fecha):
     if fecha < ahora - timedelta(minutes=30):
         return False, "⚠️ Esa hora ya pasó. ¿Quieres agendar para otro momento?"
     
-    if fecha.weekday() >= 6:  # Domingo = 6
+    if fecha.weekday() < 5:  # Lunes a viernes
+        if fecha.hour < HORA_APERTURA or fecha.hour >= HORA_CIERRE_LUNES_VIERNES:
+            return False, f"⏰ Nuestro horario es de {HORA_APERTURA}am a {HORA_CIERRE_LUNES_VIERNES-12}pm de lunes a viernes. ¿Qué hora te viene bien?"
+    elif fecha.weekday() == 5:  # Sábado
+        if fecha.hour < HORA_APERTURA or fecha.hour >= HORA_CIERRE_SABADO:
+            return False, f"⏰ Nuestro horario el sábado es de {HORA_APERTURA}am a {HORA_CIERRE_SABADO-12}pm. ¿Qué hora te viene bien?"
+    else:
         return False, "🔒 Solo trabajamos de lunes a sábado. ¿Qué otro día te gustaría?"
-    
-    if fecha.hour < HORA_APERTURA or fecha.hour >= HORA_CIERRE:
-        return False, f"⏰ Nuestro horario es de {HORA_APERTURA}am a {HORA_CIERRE-12}pm. ¿Qué otra hora te viene bien?"
     
     # Verificar que las citas sean a horas o medias horas
     if fecha.minute != 0 and fecha.minute != 30:
@@ -306,6 +309,7 @@ def validar_fecha(fecha):
         return False, f"Programamos citas a horas exactas o medias horas. ¿Te gustaría a las {hora_redondeada.strftime('%H:%M')}?"
     
     return True, None
+
 
 def verificar_disponibilidad(fecha, duracion_minutos):
     """Verifica disponibilidad en el calendario"""
