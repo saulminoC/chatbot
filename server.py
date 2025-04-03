@@ -585,8 +585,10 @@ def webhook():
                 )
         
         elif estado_actual == ESTADOS['listando_servicios']:
+            logger.info(f"Mensaje recibido para identificar servicio: {mensaje_lower}")
             servicio_identificado = identificar_servicio(mensaje_lower)
             if servicio_identificado:
+                logger.info(f"Servicio identificado: {servicio_identificado}")
                 conversaciones[remitente] = {
                     'estado': ESTADOS['solicitando_nombre'],
                     'servicio': servicio_identificado,
