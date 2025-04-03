@@ -689,8 +689,7 @@ def webhook():
                     conversaciones[remitente]['estado'] = ESTADOS['confirmando_cita']
                     
                     # Formato amigable de fecha para mostrar
-                    formato_fecha = fecha.strftime('%A %d de %B a las %H:%M').capitalize()
-                    
+                    formato_fecha = formato_fecha_español(fecha)
                     resp.message(
                         f"¿Confirmas tu cita para {servicio} el {formato_fecha}?\n\n"
                         f"Nombre: {conversaciones[remitente]['nombre']}\n"
@@ -701,7 +700,10 @@ def webhook():
                     )
         
         elif estado_actual == ESTADOS['confirmando_cita']:
+            logger.info(f"⭐ Procesando confirmación: '{mensaje_lower}'")
             if mensaje_lower in ['si', 'sí', 'confirmo', 'aceptar', 'ok']:
+                logger.info(f"⭐ Respuesta reconocida como confirmación")
+
                 # Crear evento en calendario
                 exito, evento_id = crear_evento_calendario(conversaciones[remitente])
                 
@@ -784,6 +786,47 @@ def webhook():
         respuesta_str = str(resp)
         logger.info(f"⭐ Respuesta de error: {respuesta_str}")
         return Response(respuesta_str, content_type='application/xml')
+    
+def formato_fecha_español(fecha):
+    """Devuelve una fecha formateada en español"""
+    # Traducción de días de la semana
+    dias = {
+        'Monday': 'Lunes',
+        'Tuesday': 'Martes',
+        'Wednesday': 'Miércoles',
+        'Thursday': 'Jueves',
+        'Friday': 'Viernes',
+        'Saturday': 'Sábado',
+        'Sunday': 'Domingo'
+    }
+    
+    # Traducción de meses
+    meses = {
+        'January': 'enero',
+        'February': 'febrero',
+        'March': 'marzo',
+        'April': 'abril',
+        'May': 'mayo',
+        'June': 'junio',
+        'July': 'julio',
+        'August': 'agosto',
+        'September': 'septiembre',
+        'October': 'octubre',
+        'November': 'noviembre',
+        'December': 'diciembre'
+    }
+    
+    # Formatear la fecha en inglés
+    formato_ingles = fecha.strftime('%A %d de %B a las %H:%M')
+    
+    # Traducir al español
+    for ingles, espanol in dias.items():
+        formato_ingles = formato_ingles.replace(ingles, espanol)
+    
+    for ingles, espanol in meses.items():
+        formato_ingles = formato_ingles.replace(ingles, espanol)
+    
+    return formato_ingles
 
 @app.route('/enviar-recordatorios', methods=['GET'])
 def enviar_recordatorios():
