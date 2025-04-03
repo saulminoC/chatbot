@@ -31,6 +31,8 @@ HORARIO = "de lunes a viernes de 10:00 a 20:00, sábado de 10:00 a 17:00"
 HORA_APERTURA = 10  # 10 am
 HORA_CIERRE_LUNES_VIERNES = 20   # 8 pm (lunes a viernes)
 HORA_CIERRE_SABADO = 17   # 5 pm (sábado)
+# Añade esto junto con las otras constantes
+HORA_CIERRE = HORA_CIERRE_LUNES_VIERNES  # O el valor que necesites como default
 TIMEZONE = pytz.timezone('America/Mexico_City')  # Zona horaria de CDMX/Querétaro
 DURACION_DEFAULT = 30  # minutos
 TIEMPO_EXPIRACION = 30  # minutos para expirar una conversación inactiva
@@ -494,19 +496,16 @@ def enviar_recordatorio(telefono, cita_info):
         return False
 
 def identificar_servicio(mensaje):
-    """Identifica un servicio a partir del mensaje del usuario"""
-    mensaje = mensaje.lower()
-    
-    # Coincidencia exacta
-    if mensaje in SERVICIOS:
-        return mensaje
-    
-    # Coincidencia parcial
+    # Verificar el servicio
+    logger.info(f"Identificando servicio en mensaje: {mensaje}")
+    servicio_identificado = None
     for servicio in SERVICIOS:
         if servicio in mensaje:
-            return servicio
-    
-    return None
+            servicio_identificado = servicio
+            break
+    logger.info(f"Servicio identificado: {servicio_identificado}")
+    return servicio_identificado
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -585,18 +584,14 @@ def webhook():
                 )
         
         elif estado_actual == ESTADOS['listando_servicios']:
-            logger.info(f"Mensaje recibido para identificar servicio: {mensaje_lower}")
             servicio_identificado = identificar_servicio(mensaje_lower)
             if servicio_identificado:
-                logger.info(f"Servicio identificado: {servicio_identificado}")
                 conversaciones[remitente] = {
                     'estado': ESTADOS['solicitando_nombre'],
                     'servicio': servicio_identificado,
                     'ultimo_mensaje': datetime.now(TIMEZONE)
                 }
                 resp.message(f"✍️ Por favor dime tu nombre para agendar tu *{servicio_identificado}*:")
-            elif 'servicio' in mensaje_lower or 'precio' in mensaje_lower or 'servicios' in mensaje_lower:
-                resp.message(mostrar_servicios())
             elif 'agendar' in mensaje_lower or 'cita' in mensaje_lower:
                 resp.message("Por favor elige primero un servicio:\n\n" + mostrar_servicios())
             else:
