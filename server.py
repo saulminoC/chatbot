@@ -27,21 +27,29 @@ TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
 
 # Constantes del negocio
-HORARIO = "de lunes a sábado de 8:00 a 17:00"
-HORA_APERTURA = 8  # 8 am
-HORA_CIERRE = 17   # 5 pm
-TIMEZONE = pytz.timezone('America/Mexico_City')
+HORARIO = "de lunes a viernes de 10:00 a 20:00, sábado de 10:00 a 17:00"
+HORA_APERTURA = 10  # 10 am
+HORA_CIERRE_LUNES_VIERNES = 20   # 8 pm (lunes a viernes)
+HORA_CIERRE_SABADO = 17   # 5 pm (sábado)
+TIMEZONE = pytz.timezone('America/Mexico_City')  # Zona horaria de CDMX/Querétaro
 DURACION_DEFAULT = 30  # minutos
 TIEMPO_EXPIRACION = 30  # minutos para expirar una conversación inactiva
 
 SERVICIOS = {
-    "corte de cabello": {"precio": "100 MXN", "duracion": 30},
-    "afeitado": {"precio": "500 MXN", "duracion": 45},
-    "diseño de barba": {"precio": "150 MXN", "duracion": 30},
-    "tratamiento capilar": {"precio": "200 MXN", "duracion": 60},
-    "corte y barba": {"precio": "200 MXN", "duracion": 60},
-    "paquete completo": {"precio": "350 MXN", "duracion": 90}
+    "corte de cabello": {"precio": "250 MXN", "duracion": 30},
+    "corte de barba": {"precio": "250 MXN", "duracion": 30},
+    "paquete corte y barba": {"precio": "420 MXN", "duracion": 60},
+    "barba expres": {"precio": "250 MXN", "duracion": 30},
+    "corte de dama": {"precio": "250 MXN", "duracion": 30},
+    "corte de niño": {"precio": "200 MXN", "duracion": 30},
+    "delineado de corte": {"precio": "110 MXN", "duracion": 15},
+    "exfoliación": {"precio": "120 MXN", "duracion": 30},
+    "mascarilla black": {"precio": "150 MXN", "duracion": 30},
+    "paquete mascarilla y exfoliación": {"precio": "220 MXN", "duracion": 45},
+    "mascarilla de colageno": {"precio": "170 MXN", "duracion": 30},
+    "manicure": {"precio": "200 MXN", "duracion": 30}
 }
+
 
 # Mensajes predefinidos
 MENSAJES = {
