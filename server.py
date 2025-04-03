@@ -555,40 +555,46 @@ def webhook():
     # Inicializar respuesta Twilio
     resp = MessagingResponse()
     
-    # Verificar comandos especiales
-    if mensaje_lower in ['reiniciar', 'reset', 'comenzar de nuevo']:
-        if remitente in conversaciones:
-            del conversaciones[remitente]
-        resp.message(MENSAJES["bienvenida"])
-        return Response(str(resp), content_type='application/xml')
+    try:
+        # Verificar comandos especiales
+        if mensaje_lower in ['reiniciar', 'reset', 'comenzar de nuevo']:
+            if remitente in conversaciones:
+                del conversaciones[remitente]
+            resp.message(MENSAJES["bienvenida"])
+            respuesta_str = str(resp)
+            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+            return Response(respuesta_str, content_type='application/xml')
+            
+        if 'cancelar cita' in mensaje_lower or 'cancelar mi cita' in mensaje_lower:
+            if remitente in conversaciones:
+                conversaciones[remitente]['estado'] = ESTADOS['solicitud_cancelacion']
+            else:
+                conversaciones[remitente] = {
+                    'estado': ESTADOS['solicitud_cancelacion'],
+                    'ultimo_mensaje': datetime.now(TIMEZONE)
+                }
+            resp.message("¿Estás seguro que deseas cancelar tu cita? Responde 'SI' para confirmar.")
+            respuesta_str = str(resp)
+            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+            return Response(respuesta_str, content_type='application/xml')
         
-    if 'cancelar cita' in mensaje_lower or 'cancelar mi cita' in mensaje_lower:
-        if remitente in conversaciones:
-            conversaciones[remitente]['estado'] = ESTADOS['solicitud_cancelacion']
-        else:
+        # Manejo de saludos iniciales
+        if remitente not in conversaciones or any(saludo in mensaje_lower for saludo in 
+                                ['hola', 'holi', 'buenos días', 'buenas tardes', 'buenas noches', 'buen día']):
             conversaciones[remitente] = {
-                'estado': ESTADOS['solicitud_cancelacion'],
+                'estado': ESTADOS['inicio'],
                 'ultimo_mensaje': datetime.now(TIMEZONE)
             }
-        resp.message("¿Estás seguro que deseas cancelar tu cita? Responde 'SI' para confirmar.")
-        return Response(str(resp), content_type='application/xml')
-    
-    # Manejo de saludos iniciales
-    if remitente not in conversaciones or any(saludo in mensaje_lower for saludo in 
-                             ['hola', 'holi', 'buenos días', 'buenas tardes', 'buenas noches', 'buen día']):
-        conversaciones[remitente] = {
-            'estado': ESTADOS['inicio'],
-            'ultimo_mensaje': datetime.now(TIMEZONE)
-        }
-        resp.message(MENSAJES["bienvenida"])
-        return Response(str(resp), content_type='application/xml')
-    
-    # Actualizar timestamp del último mensaje
-    conversaciones[remitente]['ultimo_mensaje'] = datetime.now(TIMEZONE)
-    
-    estado_actual = conversaciones[remitente].get('estado', ESTADOS['inicio'])
-    
-    try:
+            resp.message(MENSAJES["bienvenida"])
+            respuesta_str = str(resp)
+            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+            return Response(respuesta_str, content_type='application/xml')
+        
+        # Actualizar timestamp del último mensaje
+        conversaciones[remitente]['ultimo_mensaje'] = datetime.now(TIMEZONE)
+        
+        estado_actual = conversaciones[remitente].get('estado', ESTADOS['inicio'])
+        
         # Flujo principal de conversación
         if estado_actual == ESTADOS['inicio']:
             if ('servicio' in mensaje_lower or 'precio' in mensaje_lower or 
@@ -741,46 +747,43 @@ def webhook():
                 conversaciones[remitente]['estado'] = ESTADOS['inicio']
                 resp.message("Cancelación abortada. ¿En qué más te puedo ayudar?")
         
-        # Más logging para diagnosticar problemas
-    respuesta_str = str(resp)
-    logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
-    logger.info(f"⭐ Content-Type: application/xml")
-    logger.info(f"⭐ Longitud de la respuesta: {len(respuesta_str)} bytes")
-    
-    # Verificar si Twilio está configurado correctamente
-    logger.info(f"⭐ Estado configuración Twilio - SID: {'CONFIGURADO' if TWILIO_ACCOUNT_SID else 'NO CONFIGURADO'}")
-    logger.info(f"⭐ Estado configuración Twilio - Token: {'CONFIGURADO' if TWILIO_AUTH_TOKEN else 'NO CONFIGURADO'}")
-    logger.info(f"⭐ Estado configuración Twilio - Número: {TWILIO_PHONE_NUMBER if TWILIO_PHONE_NUMBER else 'NO CONFIGURADO'}")
-    logger.info(f"⭐ Cliente Twilio inicializado: {twilio_client is not None}")
-    
-    # Intentar enviar la respuesta directamente usando el cliente Twilio si está configurado
-    if twilio_client and remitente and TWILIO_PHONE_NUMBER:
-        try:
-            logger.info(f"⭐ Intentando enviar mensaje directamente usando cliente Twilio")
-            # Extraer el mensaje de texto de la respuesta XML
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(respuesta_str, 'xml')
-            mensaje_texto = soup.Message.text if soup.Message else "Mensaje no encontrado en respuesta"
-            
-            # Enviar directamente usando el cliente Twilio
-            message = twilio_client.messages.create(
-                body=mensaje_texto,
-                from_=TWILIO_PHONE_NUMBER,
-                to=remitente
-            )
-            logger.info(f"⭐ Mensaje enviado directamente con Twilio, SID: {message.sid}")
-        except Exception as e:
-            logger.error(f"⭐ Error al enviar mensaje directo: {e}", exc_info=True)
-            # Continuar con el método normal a pesar del error
-    
-    return Response(respuesta_str, content_type='application/xml')
+        # Logging y envío de respuesta
+        respuesta_str = str(resp)
+        logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+        
+        # Verificar si Twilio está configurado correctamente
+        logger.info(f"⭐ Estado configuración Twilio - Número: {TWILIO_PHONE_NUMBER if TWILIO_PHONE_NUMBER else 'NO CONFIGURADO'}")
+        logger.info(f"⭐ Cliente Twilio inicializado: {twilio_client is not None}")
+        
+        # Intentar enviar la respuesta directamente usando el cliente Twilio si está configurado
+        if twilio_client and remitente and TWILIO_PHONE_NUMBER:
+            try:
+                logger.info(f"⭐ Intentando enviar mensaje directamente usando cliente Twilio")
+                # Extraer el mensaje de texto de la respuesta XML
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(respuesta_str, 'xml')
+                mensaje_texto = soup.Message.text if soup.Message else "Mensaje no encontrado en respuesta"
+                
+                # Enviar directamente usando el cliente Twilio
+                message = twilio_client.messages.create(
+                    body=mensaje_texto,
+                    from_=TWILIO_PHONE_NUMBER,
+                    to=remitente
+                )
+                logger.info(f"⭐ Mensaje enviado directamente con Twilio, SID: {message.sid}")
+            except Exception as e:
+                logger.error(f"⭐ Error al enviar mensaje directo: {e}", exc_info=True)
+        
+        return Response(respuesta_str, content_type='application/xml')
     
     except Exception as e:
         logger.error(f"Error en webhook: {e}", exc_info=True)
         if remitente in conversaciones:
             del conversaciones[remitente]
         resp.message(MENSAJES["error"])
-        return Response(str(resp), content_type='application/xml')
+        respuesta_str = str(resp)
+        logger.info(f"⭐ Respuesta de error: {respuesta_str}")
+        return Response(respuesta_str, content_type='application/xml')
 
 @app.route('/enviar-recordatorios', methods=['GET'])
 def enviar_recordatorios():
