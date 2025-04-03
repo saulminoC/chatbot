@@ -24,7 +24,36 @@ app = Flask(__name__)
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
+
+# Registrar las variables de configuración (sin mostrar los valores completos por seguridad)
+if TWILIO_ACCOUNT_SID:
+    logger.info(f"✓ TWILIO_ACCOUNT_SID configurado (comienza con: {TWILIO_ACCOUNT_SID[:5]}...)")
+else:
+    logger.warning("✗ TWILIO_ACCOUNT_SID no configurado")
+
+if TWILIO_AUTH_TOKEN:
+    logger.info(f"✓ TWILIO_AUTH_TOKEN configurado (comienza con: {TWILIO_AUTH_TOKEN[:5]}...)")
+else:
+    logger.warning("✗ TWILIO_AUTH_TOKEN no configurado")
+
+if TWILIO_PHONE_NUMBER:
+    logger.info(f"✓ TWILIO_PHONE_NUMBER configurado: {TWILIO_PHONE_NUMBER}")
+    # Verificar si el número de teléfono incluye el prefijo 'whatsapp:'
+    if not TWILIO_PHONE_NUMBER.startswith('whatsapp:'):
+        logger.warning("⚠️ TWILIO_PHONE_NUMBER no tiene el prefijo 'whatsapp:', podría causar problemas")
+else:
+    logger.warning("✗ TWILIO_PHONE_NUMBER no configurado")
+
+# Inicializar cliente Twilio
+twilio_client = None
+try:
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("✓ Cliente Twilio inicializado correctamente")
+    else:
+        logger.warning("✗ No se pudo inicializar el cliente Twilio por falta de credenciales")
+except Exception as e:
+    logger.error(f"✗ Error al inicializar cliente Twilio: {e}", exc_info=True)
 
 # Constantes del negocio
 HORARIO = "de lunes a viernes de 10:00 a 20:00, sábado de 10:00 a 17:00"
@@ -712,8 +741,39 @@ def webhook():
                 conversaciones[remitente]['estado'] = ESTADOS['inicio']
                 resp.message("Cancelación abortada. ¿En qué más te puedo ayudar?")
         
-        logger.info(f"Respuesta a enviar: {str(resp)}")
-        return Response(str(resp), content_type='application/xml')
+        # Más logging para diagnosticar problemas
+    respuesta_str = str(resp)
+    logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+    logger.info(f"⭐ Content-Type: application/xml")
+    logger.info(f"⭐ Longitud de la respuesta: {len(respuesta_str)} bytes")
+    
+    # Verificar si Twilio está configurado correctamente
+    logger.info(f"⭐ Estado configuración Twilio - SID: {'CONFIGURADO' if TWILIO_ACCOUNT_SID else 'NO CONFIGURADO'}")
+    logger.info(f"⭐ Estado configuración Twilio - Token: {'CONFIGURADO' if TWILIO_AUTH_TOKEN else 'NO CONFIGURADO'}")
+    logger.info(f"⭐ Estado configuración Twilio - Número: {TWILIO_PHONE_NUMBER if TWILIO_PHONE_NUMBER else 'NO CONFIGURADO'}")
+    logger.info(f"⭐ Cliente Twilio inicializado: {twilio_client is not None}")
+    
+    # Intentar enviar la respuesta directamente usando el cliente Twilio si está configurado
+    if twilio_client and remitente and TWILIO_PHONE_NUMBER:
+        try:
+            logger.info(f"⭐ Intentando enviar mensaje directamente usando cliente Twilio")
+            # Extraer el mensaje de texto de la respuesta XML
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(respuesta_str, 'xml')
+            mensaje_texto = soup.Message.text if soup.Message else "Mensaje no encontrado en respuesta"
+            
+            # Enviar directamente usando el cliente Twilio
+            message = twilio_client.messages.create(
+                body=mensaje_texto,
+                from_=TWILIO_PHONE_NUMBER,
+                to=remitente
+            )
+            logger.info(f"⭐ Mensaje enviado directamente con Twilio, SID: {message.sid}")
+        except Exception as e:
+            logger.error(f"⭐ Error al enviar mensaje directo: {e}", exc_info=True)
+            # Continuar con el método normal a pesar del error
+    
+    return Response(respuesta_str, content_type='application/xml')
     
     except Exception as e:
         logger.error(f"Error en webhook: {e}", exc_info=True)
