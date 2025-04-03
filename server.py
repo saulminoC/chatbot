@@ -10,6 +10,7 @@ from googleapiclient.errors import HttpError
 import pytz
 import logging
 from twilio.rest import Client
+import json
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -88,12 +89,18 @@ def limpiar_conversaciones_expiradas():
         del conversaciones[remitente]
 
 def get_calendar_service():
-    """Obtiene el servicio de Google Calendar"""
     try:
-        creds = service_account.Credentials.from_service_account_file(
-            os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json'),
-            scopes=['https://www.googleapis.com/auth/calendar']
-        )
+        cred_json = os.getenv("GOOGLE_CREDENTIALS")  # Ahora obtenemos la variable
+        if cred_json:
+            creds = service_account.Credentials.from_service_account_info(
+                json.loads(cred_json),
+                scopes=['https://www.googleapis.com/auth/calendar']
+            )
+        else:
+            creds = service_account.Credentials.from_service_account_file(
+                'credentials.json',  # En caso de que uses el archivo local
+                scopes=['https://www.googleapis.com/auth/calendar']
+            )
         return build('calendar', 'v3', credentials=creds)
     except Exception as e:
         logger.error(f"Error al obtener servicio de Google Calendar: {e}")
