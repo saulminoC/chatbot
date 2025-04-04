@@ -358,7 +358,7 @@ def parsear_fecha(texto):
                 'RELATIVE_BASE': ahora,
                 'TIMEZONE': 'America/Mexico_City',
                 'RETURN_AS_TIMEZONE_AWARE': True,
-                'LANGUAGES': ['es', 'en']
+                'languages': ['es', 'en']
             }
         )
         
