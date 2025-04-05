@@ -11,6 +11,8 @@ import pytz
 import logging
 from twilio.rest import Client
 import json
+import re
+from functools import lru_cache
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,23 +28,26 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
 
 # Registrar las variables de configuración (sin mostrar los valores completos por seguridad)
-if TWILIO_ACCOUNT_SID:
-    logger.info(f"✓ TWILIO_ACCOUNT_SID configurado (comienza con: {TWILIO_ACCOUNT_SID[:5]}...)")
-else:
-    logger.warning("✗ TWILIO_ACCOUNT_SID no configurado")
+def log_config_status():
+    if TWILIO_ACCOUNT_SID:
+        logger.info(f"✓ TWILIO_ACCOUNT_SID configurado (comienza con: {TWILIO_ACCOUNT_SID[:5]}...)")
+    else:
+        logger.warning("✗ TWILIO_ACCOUNT_SID no configurado")
 
-if TWILIO_AUTH_TOKEN:
-    logger.info(f"✓ TWILIO_AUTH_TOKEN configurado (comienza con: {TWILIO_AUTH_TOKEN[:5]}...)")
-else:
-    logger.warning("✗ TWILIO_AUTH_TOKEN no configurado")
+    if TWILIO_AUTH_TOKEN:
+        logger.info(f"✓ TWILIO_AUTH_TOKEN configurado (comienza con: {TWILIO_AUTH_TOKEN[:5]}...)")
+    else:
+        logger.warning("✗ TWILIO_AUTH_TOKEN no configurado")
 
-if TWILIO_PHONE_NUMBER:
-    logger.info(f"✓ TWILIO_PHONE_NUMBER configurado: {TWILIO_PHONE_NUMBER}")
-    # Verificar si el número de teléfono incluye el prefijo 'whatsapp:'
-    if not TWILIO_PHONE_NUMBER.startswith('whatsapp:'):
-        logger.warning("⚠️ TWILIO_PHONE_NUMBER no tiene el prefijo 'whatsapp:', podría causar problemas")
-else:
-    logger.warning("✗ TWILIO_PHONE_NUMBER no configurado")
+    if TWILIO_PHONE_NUMBER:
+        logger.info(f"✓ TWILIO_PHONE_NUMBER configurado: {TWILIO_PHONE_NUMBER}")
+        # Verificar si el número de teléfono incluye el prefijo 'whatsapp:'
+        if not TWILIO_PHONE_NUMBER.startswith('whatsapp:'):
+            logger.warning("⚠️ TWILIO_PHONE_NUMBER no tiene el prefijo 'whatsapp:', podría causar problemas")
+    else:
+        logger.warning("✗ TWILIO_PHONE_NUMBER no configurado")
+
+log_config_status()
 
 # Inicializar cliente Twilio
 twilio_client = None
@@ -63,11 +68,13 @@ HORARIO_TEXTO = "🕒 *Horario:*\n" \
 HORA_APERTURA = 10  # 10 am
 HORA_CIERRE_LUNES_VIERNES = 20   # 8 pm (lunes a viernes)
 HORA_CIERRE_SABADO = 17   # 5 pm (sábado)
-# Añade esto junto con las otras constantes
-HORA_CIERRE = HORA_CIERRE_LUNES_VIERNES  # O el valor que necesites como default
+HORA_CIERRE = HORA_CIERRE_LUNES_VIERNES  # Default
 TIMEZONE = pytz.timezone('America/Mexico_City')  # Zona horaria de CDMX/Querétaro
 DURACION_DEFAULT = 30  # minutos
 TIEMPO_EXPIRACION = 30  # minutos para expirar una conversación inactiva
+
+# Tiempo para recordatorio: ahora 5 horas antes (modificado de 24 horas)
+RECORDATORIO_MINUTOS = 5 * 60  # 5 horas en minutos
 
 SERVICIOS = {
     "corte de cabello": {"precio": "250 MXN", "duracion": 30},
@@ -84,7 +91,6 @@ SERVICIOS = {
     "manicure": {"precio": "200 MXN", "duracion": 30}
 }
 
-
 # Mensajes predefinidos
 MENSAJES = {
     "bienvenida": "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
@@ -97,9 +103,9 @@ MENSAJES = {
                    "📆 {fecha}\n"
                    "💇‍♂️ {servicio}\n"
                    "💰 {precio}\n\n"
-                   "Te enviaremos un recordatorio 24 horas antes.\n"
+                   "Te enviaremos un recordatorio 5 horas antes.\n"  # Actualizado a 5 horas
                    "Para cancelar, responde con 'cancelar cita'.",
-    "recordatorio": "⏰ *RECORDATORIO*\n\nTienes una cita mañana a las {hora} para {servicio}.\n\n"
+    "recordatorio": "⏰ *RECORDATORIO*\n\nTienes una cita hoy a las {hora} para {servicio}.\n\n"  # Actualizado
                     "Si necesitas cancelar, responde 'cancelar cita'."
 }
 
@@ -114,46 +120,45 @@ ESTADOS = {
     'solicitud_cancelacion': 'solicitud_cancelacion'
 }
 
-# Estados de conversación
+# Estados de conversación (diccionario en memoria)
 conversaciones = {}
+
+# Traducciones para formato de fecha
+DIAS = {
+    'Monday': 'Lunes',
+    'Tuesday': 'Martes',
+    'Wednesday': 'Miércoles',
+    'Thursday': 'Jueves',
+    'Friday': 'Viernes',
+    'Saturday': 'Sábado',
+    'Sunday': 'Domingo'
+}
+
+MESES = {
+    'January': 'enero',
+    'February': 'febrero',
+    'March': 'marzo',
+    'April': 'abril',
+    'May': 'mayo',
+    'June': 'junio',
+    'July': 'julio',
+    'August': 'agosto',
+    'September': 'septiembre',
+    'October': 'octubre',
+    'November': 'noviembre',
+    'December': 'diciembre'
+}
 
 def formato_fecha_español(fecha):
     """Devuelve una fecha formateada en español"""
-    # Traducción de días de la semana
-    dias = {
-        'Monday': 'Lunes',
-        'Tuesday': 'Martes',
-        'Wednesday': 'Miércoles',
-        'Thursday': 'Jueves',
-        'Friday': 'Viernes',
-        'Saturday': 'Sábado',
-        'Sunday': 'Domingo'
-    }
-    
-    # Traducción de meses
-    meses = {
-        'January': 'enero',
-        'February': 'febrero',
-        'March': 'marzo',
-        'April': 'abril',
-        'May': 'mayo',
-        'June': 'junio',
-        'July': 'julio',
-        'August': 'agosto',
-        'September': 'septiembre',
-        'October': 'octubre',
-        'November': 'noviembre',
-        'December': 'diciembre'
-    }
-    
     # Formatear la fecha en inglés
     formato_ingles = fecha.strftime('%A %d de %B a las %H:%M')
     
     # Traducir al español
-    for ingles, espanol in dias.items():
+    for ingles, espanol in DIAS.items():
         formato_ingles = formato_ingles.replace(ingles, espanol)
     
-    for ingles, espanol in meses.items():
+    for ingles, espanol in MESES.items():
         formato_ingles = formato_ingles.replace(ingles, espanol)
     
     return formato_ingles
@@ -170,9 +175,11 @@ def limpiar_conversaciones_expiradas():
     
     for remitente in expiradas:
         logger.info(f"Expirando conversación de {remitente}")
-        del conversaciones[remitente]
+        conversaciones.pop(remitente, None)  # Más seguro que del
 
+@lru_cache(maxsize=1)
 def get_calendar_service():
+    """Obtiene el servicio de Google Calendar con caché"""
     try:
         cred_json = os.getenv("GOOGLE_CREDENTIALS")
         if cred_json:
@@ -208,10 +215,6 @@ def get_calendar_service():
 
 def parsear_fecha(texto):
     """Intenta parsear una fecha a partir de texto natural con implementación personalizada para español"""
-    from datetime import datetime, timedelta
-    import re
-    import calendar
-    
     logger.info(f"Intentando parsear fecha: '{texto}'")
     
     texto = texto.lower().strip()
@@ -402,7 +405,6 @@ def validar_fecha(fecha):
     
     return True, None
 
-
 def verificar_disponibilidad(fecha, duracion_minutos):
     """Verifica disponibilidad en el calendario"""
     service = get_calendar_service()
@@ -437,7 +439,8 @@ def verificar_disponibilidad(fecha, duracion_minutos):
 def buscar_proximo_horario_disponible(service, fecha_inicial, duracion_minutos):
     """Busca el próximo horario disponible en el mismo día"""
     hora_actual = fecha_inicial
-    fin_dia = fecha_inicial.replace(hour=HORA_CIERRE, minute=0)
+    hora_cierre = HORA_CIERRE_LUNES_VIERNES if fecha_inicial.weekday() < 5 else HORA_CIERRE_SABADO
+    fin_dia = fecha_inicial.replace(hour=hora_cierre, minute=0)
     
     while hora_actual < fin_dia:
         # Avanzar 30 minutos
@@ -445,19 +448,23 @@ def buscar_proximo_horario_disponible(service, fecha_inicial, duracion_minutos):
         tiempo_fin = hora_actual + timedelta(minutes=duracion_minutos)
         
         # Omitir si ya pasamos el horario de cierre
-        if tiempo_fin.hour >= HORA_CIERRE:
+        if tiempo_fin.hour >= hora_cierre:
             return None
             
         # Verificar si está libre
-        eventos = service.events().list(
-            calendarId='primary',
-            timeMin=hora_actual.isoformat(),
-            timeMax=tiempo_fin.isoformat(),
-            singleEvents=True
-        ).execute()
-        
-        if len(eventos.get('items', [])) == 0:
-            return hora_actual
+        try:
+            eventos = service.events().list(
+                calendarId='primary',
+                timeMin=hora_actual.isoformat(),
+                timeMax=tiempo_fin.isoformat(),
+                singleEvents=True
+            ).execute()
+            
+            if len(eventos.get('items', [])) == 0:
+                return hora_actual
+        except Exception as e:
+            logger.error(f"Error al buscar próximo horario: {e}")
+            return None
     
     return None
 
@@ -479,6 +486,7 @@ def crear_evento_calendario(datos_cita):
     try:
         logger.info(f"🔍 Intentando crear evento para {datos_cita['nombre']} el {datos_cita['fecha']}")
         
+        # Modificado: cambio de recordatorio de 24 horas a 5 horas
         evento = {
             'summary': f"Cita: {datos_cita['nombre']}",
             'description': f"Servicio: {datos_cita['servicio']}\nTeléfono: {datos_cita.get('telefono', 'No proporcionado')}",
@@ -493,8 +501,8 @@ def crear_evento_calendario(datos_cita):
             'reminders': {
                 'useDefault': False,
                 'overrides': [
-                    {'method': 'email', 'minutes': 24 * 60},
-                    {'method': 'popup', 'minutes': 60}
+                    {'method': 'email', 'minutes': RECORDATORIO_MINUTOS},  # 5 horas
+                    {'method': 'popup', 'minutes': 60}  # 1 hora
                 ]
             }
         }
@@ -592,25 +600,36 @@ def enviar_recordatorio(telefono, cita_info):
             from_=TWILIO_PHONE_NUMBER,
             to=telefono
         )
+        logger.info(f"✅ Recordatorio enviado a {telefono} para cita a las {cita_info['fecha'].strftime('%H:%M')}")
         return True
     except Exception as e:
         logger.error(f"Error al enviar recordatorio: {e}")
         return False
 
 def identificar_servicio(mensaje):
-    # Verificar el servicio
-    logger.info(f"Identificando servicio en mensaje: {mensaje}")
-    servicio_identificado = None
+    """Identifica el servicio mencionado en el mensaje"""
+    mensaje_lower = mensaje.lower().strip()
+    logger.info(f"Identificando servicio en mensaje: {mensaje_lower}")
+    
+    # Buscar coincidencia exacta primero
     for servicio in SERVICIOS:
-        if servicio in mensaje:
-            servicio_identificado = servicio
-            break
-    logger.info(f"Servicio identificado: {servicio_identificado}")
-    return servicio_identificado
+        if servicio == mensaje_lower:
+            logger.info(f"Servicio identificado (coincidencia exacta): {servicio}")
+            return servicio
+    
+    # Si no hay coincidencia exacta, buscar como substring
+    for servicio in SERVICIOS:
+        if servicio in mensaje_lower:
+            logger.info(f"Servicio identificado (substring): {servicio}")
+            return servicio
+            
+    logger.info("Ningún servicio identificado")
+    return None
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """Maneja las solicitudes entrantes de Twilio"""
     # Verificar que la solicitud viene de Twilio
     if request.method != 'POST':
         return Response("Método no permitido", status=405)
@@ -632,7 +651,7 @@ def webhook():
         # Verificar comandos especiales
         if mensaje_lower in ['reiniciar', 'reset', 'comenzar de nuevo']:
             if remitente in conversaciones:
-                del conversaciones[remitente]
+                conversaciones.pop(remitente, None)
             resp.message(MENSAJES["bienvenida"])
             respuesta_str = str(resp)
             logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
@@ -664,7 +683,14 @@ def webhook():
             return Response(respuesta_str, content_type='application/xml')
         
         # Actualizar timestamp del último mensaje
-        conversaciones[remitente]['ultimo_mensaje'] = datetime.now(TIMEZONE)
+        if remitente in conversaciones:
+            conversaciones[remitente]['ultimo_mensaje'] = datetime.now(TIMEZONE)
+        else:
+            # Si no existe la conversación, inicializarla
+            conversaciones[remitente] = {
+                'estado': ESTADOS['inicio'],
+                'ultimo_mensaje': datetime.now(TIMEZONE)
+            }
         
         estado_actual = conversaciones[remitente].get('estado', ESTADOS['inicio'])
         
@@ -676,11 +702,10 @@ def webhook():
                 conversaciones[remitente]['estado'] = ESTADOS['listando_servicios']
                 resp.message(mostrar_servicios())
             elif 'agendar' in mensaje_lower or 'cita' in mensaje_lower or 'reservar' in mensaje_lower:
-                conversaciones[remitente] = {
+                conversaciones[remitente].update({
                     'estado': ESTADOS['solicitando_nombre'],
                     'servicio': None,
-                    'ultimo_mensaje': datetime.now(TIMEZONE)
-                }
+                })
                 resp.message("✍️ Por favor dime tu nombre para agendar tu cita:")
             else:
                 resp.message(
@@ -695,11 +720,10 @@ def webhook():
         elif estado_actual == ESTADOS['listando_servicios']:
             servicio_identificado = identificar_servicio(mensaje_lower)
             if servicio_identificado:
-                conversaciones[remitente] = {
+                conversaciones[remitente].update({
                     'estado': ESTADOS['solicitando_nombre'],
                     'servicio': servicio_identificado,
-                    'ultimo_mensaje': datetime.now(TIMEZONE)
-                }
+                })
                 resp.message(f"✍️ Por favor dime tu nombre para agendar tu *{servicio_identificado}*:")
             elif 'agendar' in mensaje_lower or 'cita' in mensaje_lower:
                 resp.message("Por favor elige primero un servicio:\n\n" + mostrar_servicios())
@@ -720,7 +744,7 @@ def webhook():
                     resp.message(f"Gracias {mensaje}. Ahora elige el servicio que deseas:\n\n" + mostrar_servicios())
                 else:
                     conversaciones[remitente]['estado'] = ESTADOS['solicitando_telefono']
-                    resp.message(f"Gracias {mensaje}. Por favor comparte un número de teléfono para contactarte:")
+                    resp.message(f"Gracias {mensaje}. Por favor comparte un número de teléfono:")
             
         elif estado_actual == ESTADOS['solicitando_telefono']:
             # Verificación simple de teléfono (solo números y espacios)
@@ -815,7 +839,7 @@ def webhook():
                 if exito:
                     # Si se canceló exitosamente, reiniciar conversación
                     if remitente in conversaciones:
-                        del conversaciones[remitente]
+                        conversaciones.pop(remitente, None)
                     resp.message(f"{mensaje_resultado}\n\nSi deseas agendar una nueva cita, escribe 'agendar'.")
                 else:
                     resp.message(mensaje_resultado)
@@ -827,17 +851,18 @@ def webhook():
         respuesta_str = str(resp)
         logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
         
-        # Verificar si Twilio está configurado correctamente
-        logger.info(f"⭐ Estado configuración Twilio - Número: {TWILIO_PHONE_NUMBER if TWILIO_PHONE_NUMBER else 'NO CONFIGURADO'}")
-        logger.info(f"⭐ Cliente Twilio inicializado: {twilio_client is not None}")
-        
         return Response(respuesta_str, content_type='application/xml')
     
     except Exception as e:
         logger.error(f"Error en webhook: {e}", exc_info=True)
         if remitente in conversaciones:
-            del conversaciones[remitente]
+            conversaciones.pop(remitente, None)
         resp.message(MENSAJES["error"])
         respuesta_str = str(resp)
         logger.info(f"⭐ Respuesta de error: {respuesta_str}")
         return Response(respuesta_str, content_type='application/xml')
+
+# Agrega esto si necesitas ejecutar la aplicación directamente
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
