@@ -177,22 +177,36 @@ def limpiar_conversaciones_expiradas():
         logger.info(f"Expirando conversación de {remitente}")
         conversaciones.pop(remitente, None)  # Más seguro que del
 
-@lru_cache(maxsize=1)
 def get_calendar_service():
-    """Obtiene el servicio de Google Calendar con caché"""
+    """Obtiene el servicio de Google Calendar"""
+    # Eliminamos el lru_cache para asegurar conexión fresca cada vez
     try:
         cred_json = os.getenv("GOOGLE_CREDENTIALS")
+        calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        
         if cred_json:
             logger.info(f"✓ GOOGLE_CREDENTIALS configurado (longitud: {len(cred_json)} caracteres)")
             try:
                 json_data = json.loads(cred_json)
                 logger.info(f"✓ GOOGLE_CREDENTIALS parseado correctamente como JSON")
+                
+                # Asegurar que las credenciales tienen toda la información necesaria
+                required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
+                missing_fields = [field for field in required_fields if field not in json_data]
+                
+                if missing_fields:
+                    logger.error(f"❌ Faltan campos en las credenciales: {missing_fields}")
+                    return None
+                
                 creds = service_account.Credentials.from_service_account_info(
                     json_data,
                     scopes=['https://www.googleapis.com/auth/calendar']
                 )
+                logger.info(f"✓ Credenciales generadas correctamente para: {json_data.get('client_email', 'unknown')}")
+                
             except json.JSONDecodeError as e:
                 logger.error(f"❌ Error al parsear GOOGLE_CREDENTIALS como JSON: {e}")
+                logger.error(f"Primeros 100 caracteres de GOOGLE_CREDENTIALS: {cred_json[:100]}...")
                 return None
         else:
             logger.warning("⚠️ GOOGLE_CREDENTIALS no configurado, intentando usar archivo local")
@@ -207,6 +221,29 @@ def get_calendar_service():
                 return None
             
         service = build('calendar', 'v3', credentials=creds)
+        
+        # Prueba de conectividad
+        try:
+            # Intentar listar calendarios para verificar conexión
+            calendar_list = service.calendarList().list(maxResults=10).execute()
+            calendars = calendar_list.get('items', [])
+            logger.info(f"✓ Conectividad con Google Calendar verificada. Calendarios disponibles: {len(calendars)}")
+            
+            # Verificar si el calendario primary o el especificado existe
+            calendar_exists = False
+            for calendar in calendars:
+                logger.info(f"Calendario disponible: {calendar.get('id')} - {calendar.get('summary')}")
+                if calendar.get('id') == calendar_id or (calendar_id == "primary" and calendar.get('primary')):
+                    calendar_exists = True
+                    logger.info(f"✓ Calendario '{calendar_id}' verificado y disponible")
+                    
+            if not calendar_exists:
+                logger.warning(f"⚠️ No se encontró el calendario '{calendar_id}' en la lista de calendarios disponibles")
+        
+        except Exception as e:
+            logger.error(f"❌ Error al verificar conectividad con Google Calendar: {e}", exc_info=True)
+            return None
+            
         logger.info("✓ Servicio de Google Calendar inicializado correctamente")
         return service
     except Exception as e:
@@ -486,16 +523,23 @@ def crear_evento_calendario(datos_cita):
     try:
         logger.info(f"🔍 Intentando crear evento para {datos_cita['nombre']} el {datos_cita['fecha']}")
         
+        # Asegurar que la fecha tenga zona horaria
+        fecha_inicio = datos_cita['fecha']
+        if fecha_inicio.tzinfo is None:
+            fecha_inicio = TIMEZONE.localize(fecha_inicio)
+            
+        fecha_fin = fecha_inicio + timedelta(minutes=SERVICIOS[datos_cita['servicio']]['duracion'])
+        
         # Modificado: cambio de recordatorio de 24 horas a 5 horas
         evento = {
-            'summary': f"Cita: {datos_cita['nombre']}",
+            'summary': f"Cita Barbería: {datos_cita['nombre']}",
             'description': f"Servicio: {datos_cita['servicio']}\nTeléfono: {datos_cita.get('telefono', 'No proporcionado')}",
             'start': {
-                'dateTime': datos_cita['fecha'].isoformat(),
+                'dateTime': fecha_inicio.isoformat(),
                 'timeZone': 'America/Mexico_City',
             },
             'end': {
-                'dateTime': (datos_cita['fecha'] + timedelta(minutes=SERVICIOS[datos_cita['servicio']]['duracion'])).isoformat(),
+                'dateTime': fecha_fin.isoformat(),
                 'timeZone': 'America/Mexico_City',
             },
             'reminders': {
@@ -504,21 +548,55 @@ def crear_evento_calendario(datos_cita):
                     {'method': 'email', 'minutes': RECORDATORIO_MINUTOS},  # 5 horas
                     {'method': 'popup', 'minutes': 60}  # 1 hora
                 ]
-            }
+            },
+            'colorId': '11',  # Color para distinguir citas de barbería
+            'status': 'confirmed'
         }
         
         logger.info(f"🔍 Datos del evento: {evento}")
         
-        evento_creado = service.events().insert(
-            calendarId='primary',
-            body=evento,
-            sendUpdates='all'
-        ).execute()
+        # Verificar que tenemos los permisos adecuados
+        try:
+            # Verificar permisos con una llamada de prueba
+            service.calendarList().get(calendarId='primary').execute()
+            logger.info("✓ Verificación de permisos de calendario exitosa")
+        except Exception as e:
+            logger.error(f"❌ Error de permisos en el calendario: {e}", exc_info=True)
+            return True, "error-permisos"
         
-        logger.info(f"✅ Evento creado con ID: {evento_creado.get('id')}")
-        return True, evento_creado.get('id')
+        # Insertar el evento
+        try:
+            evento_creado = service.events().insert(
+                calendarId='primary',
+                body=evento,
+                sendUpdates='all'
+            ).execute()
+            
+            # Verificar que el evento se creó correctamente
+            if 'id' in evento_creado:
+                logger.info(f"✅ Evento creado con ID: {evento_creado.get('id')}")
+                
+                # Verificar que podemos recuperar el evento recién creado
+                evento_verificado = service.events().get(
+                    calendarId='primary',
+                    eventId=evento_creado.get('id')
+                ).execute()
+                
+                if evento_verificado:
+                    logger.info(f"✅ Evento verificado correctamente con ID: {evento_verificado.get('id')}")
+                else:
+                    logger.warning("⚠️ No se pudo verificar la creación del evento")
+                
+                return True, evento_creado.get('id')
+            else:
+                logger.error("❌ El evento creado no tiene ID")
+                return True, "error-sin-id"
+        except HttpError as e:
+            logger.error(f"❌ Error de Google API al crear evento: {e.content if hasattr(e, 'content') else str(e)}", exc_info=True)
+            return True, "error-http"
+            
     except HttpError as e:
-        logger.error(f"❌ Error de Google API al crear evento: {e}", exc_info=True)
+        logger.error(f"❌ Error de Google API al crear evento: {e.content if hasattr(e, 'content') else str(e)}", exc_info=True)
         return True, "error-http"  # Simulamos éxito para no bloquear al usuario
     except Exception as e:
         logger.error(f"❌ Error desconocido al crear evento: {e}", exc_info=True)
