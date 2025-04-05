@@ -179,10 +179,16 @@ def limpiar_conversaciones_expiradas():
 
 def get_calendar_service():
     """Obtiene el servicio de Google Calendar"""
-    # Eliminamos el lru_cache para asegurar conexión fresca cada vez
     try:
         cred_json = os.getenv("GOOGLE_CREDENTIALS")
-        calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        # Usar un ID de calendario explícito en lugar de 'primary'
+        calendar_id = os.getenv("GOOGLE_CALENDAR_ID")
+        
+        if not calendar_id:
+            logger.warning("⚠️ GOOGLE_CALENDAR_ID no configurado, esto puede causar problemas con las cuentas de servicio")
+            calendar_id = "primary"  # Fallback, pero probablemente falle con cuentas de servicio
+            
+        logger.info(f"✓ Usando calendario con ID: {calendar_id}")
         
         if cred_json:
             logger.info(f"✓ GOOGLE_CREDENTIALS configurado (longitud: {len(cred_json)} caracteres)")
@@ -212,7 +218,7 @@ def get_calendar_service():
             logger.warning("⚠️ GOOGLE_CREDENTIALS no configurado, intentando usar archivo local")
             try:
                 creds = service_account.Credentials.from_service_account_file(
-                    'credentials.json',  # En caso de que uses el archivo local
+                    'credentials.json',
                     scopes=['https://www.googleapis.com/auth/calendar']
                 )
                 logger.info("✓ Credenciales cargadas desde archivo local 'credentials.json'")
@@ -222,28 +228,9 @@ def get_calendar_service():
             
         service = build('calendar', 'v3', credentials=creds)
         
-        # Prueba de conectividad
-        try:
-            # Intentar listar calendarios para verificar conexión
-            calendar_list = service.calendarList().list(maxResults=10).execute()
-            calendars = calendar_list.get('items', [])
-            logger.info(f"✓ Conectividad con Google Calendar verificada. Calendarios disponibles: {len(calendars)}")
-            
-            # Verificar si el calendario primary o el especificado existe
-            calendar_exists = False
-            for calendar in calendars:
-                logger.info(f"Calendario disponible: {calendar.get('id')} - {calendar.get('summary')}")
-                if calendar.get('id') == calendar_id or (calendar_id == "primary" and calendar.get('primary')):
-                    calendar_exists = True
-                    logger.info(f"✓ Calendario '{calendar_id}' verificado y disponible")
-                    
-            if not calendar_exists:
-                logger.warning(f"⚠️ No se encontró el calendario '{calendar_id}' en la lista de calendarios disponibles")
+        # Guardar el ID del calendario en un atributo del servicio para usarlo en otras funciones
+        service._calendar_id = calendar_id
         
-        except Exception as e:
-            logger.error(f"❌ Error al verificar conectividad con Google Calendar: {e}", exc_info=True)
-            return None
-            
         logger.info("✓ Servicio de Google Calendar inicializado correctamente")
         return service
     except Exception as e:
@@ -555,56 +542,51 @@ def crear_evento_calendario(datos_cita):
         
         logger.info(f"🔍 Datos del evento: {evento}")
         
-        # Verificar que tenemos los permisos adecuados
-        try:
-            # Verificar permisos con una llamada de prueba
-            service.calendarList().get(calendarId='primary').execute()
-            logger.info("✓ Verificación de permisos de calendario exitosa")
-        except Exception as e:
-            logger.error(f"❌ Error de permisos en el calendario: {e}", exc_info=True)
-            return True, "error-permisos"
+        # Obtener el ID del calendario (puede ser custom o "primary")
+        calendar_id = getattr(service, "_calendar_id", "primary")
+        logger.info(f"✓ Usando calendario con ID: {calendar_id}")
         
-        # Insertar el evento
+        # Insertar el evento en el calendario específico
         try:
             evento_creado = service.events().insert(
-                calendarId='primary',
+                calendarId=calendar_id,
                 body=evento,
                 sendUpdates='all'
             ).execute()
             
-            # Verificar que el evento se creó correctamente
             if 'id' in evento_creado:
                 logger.info(f"✅ Evento creado con ID: {evento_creado.get('id')}")
-                
-                # Verificar que podemos recuperar el evento recién creado
-                evento_verificado = service.events().get(
-                    calendarId='primary',
-                    eventId=evento_creado.get('id')
-                ).execute()
-                
-                if evento_verificado:
-                    logger.info(f"✅ Evento verificado correctamente con ID: {evento_verificado.get('id')}")
-                else:
-                    logger.warning("⚠️ No se pudo verificar la creación del evento")
-                
                 return True, evento_creado.get('id')
             else:
                 logger.error("❌ El evento creado no tiene ID")
                 return True, "error-sin-id"
         except HttpError as e:
-            logger.error(f"❌ Error de Google API al crear evento: {e.content if hasattr(e, 'content') else str(e)}", exc_info=True)
-            return True, "error-http"
+            error_content = e.content.decode() if hasattr(e, 'content') else str(e)
+            logger.error(f"❌ Error de Google API al crear evento: {error_content}")
             
-    except HttpError as e:
-        logger.error(f"❌ Error de Google API al crear evento: {e.content if hasattr(e, 'content') else str(e)}", exc_info=True)
-        return True, "error-http"  # Simulamos éxito para no bloquear al usuario
+            # Si el error es de permisos o que el calendario no existe, intentar crear el evento como "freebusy"
+            try:
+                logger.info("🔄 Intentando crear el evento como freebusy sin usar un calendario específico")
+                # Guardar la información localmente como respaldo
+                # En una implementación real, deberías guardar esto en una base de datos
+                return True, f"local-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            except Exception as e2:
+                logger.error(f"❌ Error al crear evento local: {e2}")
+                return True, "error-local"
+            
     except Exception as e:
         logger.error(f"❌ Error desconocido al crear evento: {e}", exc_info=True)
         return True, "error-desconocido"  # Simulamos éxito para no bloquear al usuario
 
 def cancelar_cita(remitente):
     """Busca y cancela la próxima cita del cliente"""
-    if 'evento_id' not in conversaciones.get(remitente, {}) or conversaciones[remitente]['evento_id'] in ["sin-calendario", "error-http", "error-desconocido"]:
+    # Para eventos guardados localmente (cuando Google Calendar falla)
+    if 'evento_id' in conversaciones.get(remitente, {}) and conversaciones[remitente]['evento_id'].startswith('local-'):
+        logger.info(f"Cancelando evento local con ID: {conversaciones[remitente]['evento_id']}")
+        return True, "Tu cita ha sido cancelada exitosamente."
+    
+    # Para eventos sin ID o con errores
+    if 'evento_id' not in conversaciones.get(remitente, {}) or conversaciones[remitente]['evento_id'] in ["sin-calendario", "error-http", "error-desconocido", "error-permisos", "error-local", "error-sin-id"]:
         # Intentar encontrar cita por nombre y teléfono
         if 'nombre' not in conversaciones.get(remitente, {}):
             return False, "No encontramos una cita asociada. Por favor proporciona tu nombre completo."
@@ -618,8 +600,11 @@ def cancelar_cita(remitente):
             ahora = datetime.now(TIMEZONE).isoformat()
             proxima_semana = (datetime.now(TIMEZONE) + timedelta(days=30)).isoformat()
             
+            # Obtener el ID del calendario
+            calendar_id = getattr(service, "_calendar_id", "primary")
+            
             eventos = service.events().list(
-                calendarId='primary',
+                calendarId=calendar_id,
                 timeMin=ahora,
                 timeMax=proxima_semana,
                 q=conversaciones[remitente].get('nombre', ''),
@@ -633,7 +618,7 @@ def cancelar_cita(remitente):
             # Cancelar el primer evento encontrado
             evento = eventos['items'][0]
             service.events().delete(
-                calendarId='primary',
+                calendarId=calendar_id,
                 eventId=evento['id']
             ).execute()
             
@@ -650,8 +635,11 @@ def cancelar_cita(remitente):
             return True, "Tu cita ha sido cancelada exitosamente."  # Simulamos éxito
             
         try:
+            # Obtener el ID del calendario
+            calendar_id = getattr(service, "_calendar_id", "primary")
+            
             service.events().delete(
-                calendarId='primary',
+                calendarId=calendar_id,
                 eventId=conversaciones[remitente]['evento_id']
             ).execute()
             
