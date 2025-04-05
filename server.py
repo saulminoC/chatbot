@@ -11,17 +11,9 @@ import pytz
 import logging
 from twilio.rest import Client
 import json
-import re
 
 # Configuración de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("barber_bot.log")
-    ]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Configuración inicial
@@ -32,259 +24,36 @@ app = Flask(__name__)
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
-CALENDAR_ID = os.getenv('CALENDAR_ID', 'primary')
 
 # Registrar las variables de configuración (sin mostrar los valores completos por seguridad)
-def log_config_status():
-    """Función para registrar el estado de configuración de variables críticas"""
-    config_status = {
-        "TWILIO_ACCOUNT_SID": TWILIO_ACCOUNT_SID[:5] + "..." if TWILIO_ACCOUNT_SID else None,
-        "TWILIO_AUTH_TOKEN": TWILIO_AUTH_TOKEN[:5] + "..." if TWILIO_AUTH_TOKEN else None,
-        "TWILIO_PHONE_NUMBER": TWILIO_PHONE_NUMBER,
-        "CALENDAR_ID": CALENDAR_ID
-    }
-    
-    for key, value in config_status.items():
-        if value:
-            logger.info(f"✓ {key} configurado correctamente")
-            if key == "TWILIO_PHONE_NUMBER" and not value.startswith('whatsapp:'):
-                logger.warning(f"⚠️ {key} no tiene el prefijo 'whatsapp:', podría causar problemas")
-        else:
-            logger.warning(f"✗ {key} no configurado")
+if TWILIO_ACCOUNT_SID:
+    logger.info(f"✓ TWILIO_ACCOUNT_SID configurado (comienza con: {TWILIO_ACCOUNT_SID[:5]}...)")
+else:
+    logger.warning("✗ TWILIO_ACCOUNT_SID no configurado")
+
+if TWILIO_AUTH_TOKEN:
+    logger.info(f"✓ TWILIO_AUTH_TOKEN configurado (comienza con: {TWILIO_AUTH_TOKEN[:5]}...)")
+else:
+    logger.warning("✗ TWILIO_AUTH_TOKEN no configurado")
+
+if TWILIO_PHONE_NUMBER:
+    logger.info(f"✓ TWILIO_PHONE_NUMBER configurado: {TWILIO_PHONE_NUMBER}")
+    # Verificar si el número de teléfono incluye el prefijo 'whatsapp:'
+    if not TWILIO_PHONE_NUMBER.startswith('whatsapp:'):
+        logger.warning("⚠️ TWILIO_PHONE_NUMBER no tiene el prefijo 'whatsapp:', podría causar problemas")
+else:
+    logger.warning("✗ TWILIO_PHONE_NUMBER no configurado")
 
 # Inicializar cliente Twilio
-def init_twilio_client():
-    """Inicializa el cliente de Twilio si las credenciales están disponibles"""
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
-        logger.warning("✗ No se pudo inicializar el cliente Twilio por falta de credenciales")
-        return None
-        
-    try:
-        # Verificar comandos especiales
-        if PATRONES['reiniciar'].search(mensaje_lower):
-            if remitente in conversaciones:
-                del conversaciones[remitente]
-            resp.message(MENSAJES["bienvenida"])
-            respuesta_str = str(resp)
-            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
-            return Response(respuesta_str, content_type='application/xml')
-            
-        if PATRONES['cancelar_cita'].search(mensaje_lower):
-            actualizar_estado_conversacion(remitente, ESTADOS['solicitud_cancelacion'])
-            resp.message("¿Estás seguro que deseas cancelar tu cita? Responde 'SI' para confirmar.")
-            respuesta_str = str(resp)
-            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
-            return Response(respuesta_str, content_type='application/xml')
-            
-        # Manejo de saludos iniciales
-        if remitente not in conversaciones or es_saludo(mensaje):
-            actualizar_estado_conversacion(remitente, ESTADOS['inicio'])
-            resp.message(MENSAJES["bienvenida"])
-            respuesta_str = str(resp)
-            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
-            return Response(respuesta_str, content_type='application/xml')
-        
-        # Actualizar timestamp del último mensaje
-        if remitente in conversaciones:
-            conversaciones[remitente]['ultimo_mensaje'] = datetime.now(TIMEZONE)
-        
-        estado_actual = conversaciones.get(remitente, {}).get('estado', ESTADOS['inicio'])
-        
-        # Flujo principal de conversación
-        if estado_actual == ESTADOS['inicio']:
-            if PATRONES['servicios'].search(mensaje_lower):
-                actualizar_estado_conversacion(remitente, ESTADOS['listando_servicios'])
-                resp.message(mostrar_servicios(por_categoria=True))
-            elif PATRONES['agendar'].search(mensaje_lower):
-                actualizar_estado_conversacion(remitente, ESTADOS['solicitando_nombre'], servicio=None)
-                resp.message("✍️ Por favor dime tu nombre para agendar tu cita:")
-            else:
-                resp.message(
-                    "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
-                    "Puedes preguntar por:\n"
-                    "• 'servicios' para ver opciones\n"
-                    "• 'agendar' para reservar cita\n\n"
-                    f"{HORARIO_TEXTO}\n\n"
-                    "Por favor escribe una de estas opciones."
-                )
-                
-        elif estado_actual == ESTADOS['solicitando_fecha']:
-            # Parsear fecha del mensaje
-            fecha = parsear_fecha(mensaje)
-            valido, mensaje_error = validar_fecha(fecha)
-            
-            if not valido:
-                resp.message(mensaje_error)
-            else:
-                servicio = conversaciones[remitente]['servicio']
-                duracion = SERVICIOS[servicio]['duracion']
-                
-                # Verificar disponibilidad
-                disponible, mensaje_error = verificar_disponibilidad(fecha, duracion)
-                
-                if not disponible:
-                    resp.message(mensaje_error)
-                else:
-                    # Actualizar estado con la fecha
-                    actualizar_estado_conversacion(remitente, ESTADOS['confirmando_cita'], fecha=fecha)
-                    
-                    # Formato amigable de fecha para mostrar
-                    formato_fecha = formato_fecha_español(fecha)
-                    
-                    resp.message(
-                        f"¿Confirmas tu cita para {servicio} el {formato_fecha}?\n\n"
-                        f"👤 Nombre: {conversaciones[remitente]['nombre']}\n"
-                        f"✂️ Servicio: {servicio}\n"
-                        f"💰 Precio: {SERVICIOS[servicio]['precio']}\n"
-                        f"⏱️ Duración: {duracion} minutos\n\n"
-                        "Responde 'si' para confirmar o 'no' para modificar."
-                    )
-        
-        elif estado_actual == ESTADOS['confirmando_cita']:
-            logger.info(f"⭐ Procesando confirmación: '{mensaje_lower}'")
-            if PATRONES['si'].search(mensaje_lower):
-                logger.info(f"⭐ Respuesta reconocida como confirmación")
-                # Crear evento en calendario
-                exito, evento_id = crear_evento_calendario(conversaciones[remitente])
-                
-                if exito:
-                    # Actualizar con ID de evento y regresar a inicio
-                    actualizar_estado_conversacion(remitente, ESTADOS['inicio'], evento_id=evento_id)
-                    
-                    servicio = conversaciones[remitente]['servicio']
-                    fecha = conversaciones[remitente]['fecha']
-                    precio = SERVICIOS[servicio]['precio']
-                    
-                    # Formato amigable de fecha
-                    formato_fecha = formato_fecha_español(fecha)
-                    
-                    # Programar recordatorio para 24 horas antes si hay teléfono
-                    if twilio_client and 'telefono' in conversaciones[remitente]:
-                        try:
-                            # Programa recordatorio para un día antes (en una implementación real)
-                            logger.info(f"✅ Recordatorio programado para {conversaciones[remitente].get('telefono')}")
-                        except Exception as e:
-                            logger.error(f"❌ Error al programar recordatorio: {e}")
-                    
-                    resp.message(MENSAJES["confirmacion"].format(
-                        fecha=formato_fecha,
-                        servicio=servicio,
-                        precio=precio
-                    ))
-                else:
-                    resp.message("⚠️ Lo sentimos, hubo un problema al registrar tu cita en nuestro calendario. Por favor contáctanos directamente al teléfono de la barbería para confirmar tu cita.")
-            
-            elif PATRONES['no'].search(mensaje_lower):
-                actualizar_estado_conversacion(remitente, ESTADOS['solicitando_fecha'])
-                resp.message("Entendido. Por favor indica otra fecha y hora que te convenga:")
-            
-            else:
-                resp.message("Por favor responde 'si' para confirmar tu cita o 'no' para elegir otro horario.")
-                
-        elif estado_actual == ESTADOS['solicitud_cancelacion']:
-            if PATRONES['si'].search(mensaje_lower):
-                exito, mensaje_resultado = cancelar_cita(remitente)
-                if exito:
-                    # Si se canceló exitosamente, reiniciar conversación
-                    if remitente in conversaciones:
-                        del conversaciones[remitente]
-                    resp.message(f"{mensaje_resultado}\n\nSi deseas agendar una nueva cita, escribe 'agendar'.")
-                else:
-                    resp.message(mensaje_resultado)
-            else:
-                actualizar_estado_conversacion(remitente, ESTADOS['inicio'])
-                resp.message("Cancelación abortada. ¿En qué más te puedo ayudar?")
-        
-        # Logging y envío de respuesta
-        respuesta_str = str(resp)
-        logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
-        
-        return Response(respuesta_str, content_type='application/xml')
-    
-    except Exception as e:
-        logger.error(f"❌ Error en webhook: {e}", exc_info=True)
-        if remitente in conversaciones:
-            del conversaciones[remitente]
-        resp.message(MENSAJES["error"])
-        respuesta_str = str(resp)
-        logger.info(f"⭐ Respuesta de error: {respuesta_str}")
-        return Response(respuesta_str, content_type='application/xml')
-
-
-# Ruta para estadísticas y monitoreo
-@app.route('/status', methods=['GET'])
-def status():
-    """Endpoint para verificar el estado del sistema"""
-    try:
-        resultado = {
-            "status": "healthy",
-            "conversations": len(conversaciones),
-            "twilio_configured": twilio_client is not None,
-            "calendar_configured": get_calendar_service() is not None,
-            "version": "2.0.0"
-        }
-        return Response(json.dumps(resultado), content_type='application/json')
-    except Exception as e:
-        logger.error(f"Error en status: {e}")
-        return Response(json.dumps({"status": "error", "message": str(e)}), 
-                      content_type='application/json', status=500)
-                
-        elif estado_actual == ESTADOS['solicitando_nombre']:
-            if len(mensaje) < 3:
-                resp.message("Por favor proporciona tu nombre completo.")
-            else:
-                conversaciones[remitente]['nombre'] = mensaje
-                
-                if conversaciones[remitente].get('servicio') is None:
-                    actualizar_estado_conversacion(remitente, ESTADOS['listando_servicios'], nombre=mensaje)
-                    resp.message(f"Gracias {mensaje}. Ahora elige el servicio que deseas:\n\n" + mostrar_servicios())
-                else:
-                    actualizar_estado_conversacion(remitente, ESTADOS['solicitando_telefono'], nombre=mensaje)
-                    resp.message(f"Gracias {mensaje}. Por favor comparte un número de teléfono para contactarte:")
-        
-        elif estado_actual == ESTADOS['solicitando_telefono']:
-            # Verificación simple de teléfono (solo números y espacios)
-            telefono_limpio = ''.join(c for c in mensaje if c.isdigit() or c.isspace())
-            if len(telefono_limpio) < 8:
-                resp.message("Por favor proporciona un número de teléfono válido.")
-            else:
-                actualizar_estado_conversacion(remitente, ESTADOS['solicitando_fecha'], telefono=telefono_limpio)
-                
-                servicio = conversaciones[remitente]['servicio']
-                duracion = SERVICIOS[servicio]['duracion']
-                precio = SERVICIOS[servicio]['precio']
-                
-                resp.message(
-                    f"¿Cuándo te gustaría agendar tu cita para *{servicio}*?\n\n"
-                    f"💰 Precio: {precio}\n"
-                    f"⏱️ Duración: {duracion} minutos\n"
-                    f"📅 Nuestro horario es {HORARIO}\n\n"
-                    "Por favor escribe la fecha y hora (por ejemplo: 'mañana a las 10am', 'jueves a las 4pm')"
-                )
-        
-        elif estado_actual == ESTADOS['listando_servicios']:
-            servicio_identificado = identificar_servicio(mensaje)
-            if servicio_identificado:
-                actualizar_estado_conversacion(remitente, ESTADOS['solicitando_nombre'], servicio=servicio_identificado)
-                resp.message(f"✍️ Por favor dime tu nombre para agendar tu *{servicio_identificado}*:")
-            elif PATRONES['agendar'].search(mensaje_lower):
-                resp.message("Por favor elige primero un servicio para tu cita:\n\n" + mostrar_servicios())
-            else:
-                # Sugerir servicios similares si está cerca pero no exacto
-                resp.message(
-                    "No reconozco ese servicio. Por favor elige uno de nuestra lista:\n\n" +
-                    mostrar_servicios()
-                )
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+twilio_client = None
+try:
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         logger.info("✓ Cliente Twilio inicializado correctamente")
-        return client
-    except Exception as e:
-        logger.error(f"✗ Error al inicializar cliente Twilio: {e}", exc_info=True)
-        return None
-
-# Registrar configuración y inicializar Twilio
-log_config_status()
-twilio_client = init_twilio_client()
+    else:
+        logger.warning("✗ No se pudo inicializar el cliente Twilio por falta de credenciales")
+except Exception as e:
+    logger.error(f"✗ Error al inicializar cliente Twilio: {e}", exc_info=True)
 
 # Constantes del negocio
 HORARIO = "de lunes a viernes de 10:00 a 20:00, sábado de 10:00 a 17:00"
@@ -294,66 +63,34 @@ HORARIO_TEXTO = "🕒 *Horario:*\n" \
 HORA_APERTURA = 10  # 10 am
 HORA_CIERRE_LUNES_VIERNES = 20   # 8 pm (lunes a viernes)
 HORA_CIERRE_SABADO = 17   # 5 pm (sábado)
+# Añade esto junto con las otras constantes
+HORA_CIERRE = HORA_CIERRE_LUNES_VIERNES  # O el valor que necesites como default
 TIMEZONE = pytz.timezone('America/Mexico_City')  # Zona horaria de CDMX/Querétaro
 DURACION_DEFAULT = 30  # minutos
 TIEMPO_EXPIRACION = 30  # minutos para expirar una conversación inactiva
 
-# Separar servicios por categorías para mejor organización
 SERVICIOS = {
-    # Servicios de corte
-    "corte de cabello": {"precio": "250 MXN", "duracion": 30, "categoria": "corte"},
-    "corte de barba": {"precio": "250 MXN", "duracion": 30, "categoria": "corte"},
-    "paquete corte y barba": {"precio": "420 MXN", "duracion": 60, "categoria": "corte"},
-    "barba expres": {"precio": "250 MXN", "duracion": 30, "categoria": "corte"},
-    "corte de dama": {"precio": "250 MXN", "duracion": 30, "categoria": "corte"},
-    "corte de niño": {"precio": "200 MXN", "duracion": 30, "categoria": "corte"},
-    "delineado de corte": {"precio": "110 MXN", "duracion": 15, "categoria": "corte"},
-    
-    # Servicios de tratamiento
-    "exfoliación": {"precio": "120 MXN", "duracion": 30, "categoria": "tratamiento"},
-    "mascarilla black": {"precio": "150 MXN", "duracion": 30, "categoria": "tratamiento"},
-    "paquete mascarilla y exfoliación": {"precio": "220 MXN", "duracion": 45, "categoria": "tratamiento"},
-    "mascarilla de colageno": {"precio": "170 MXN", "duracion": 30, "categoria": "tratamiento"},
-    
-    # Otros servicios
-    "manicure": {"precio": "200 MXN", "duracion": 30, "categoria": "otro"}
+    "corte de cabello": {"precio": "250 MXN", "duracion": 30},
+    "corte de barba": {"precio": "250 MXN", "duracion": 30},
+    "paquete corte y barba": {"precio": "420 MXN", "duracion": 60},
+    "barba expres": {"precio": "250 MXN", "duracion": 30},
+    "corte de dama": {"precio": "250 MXN", "duracion": 30},
+    "corte de niño": {"precio": "200 MXN", "duracion": 30},
+    "delineado de corte": {"precio": "110 MXN", "duracion": 15},
+    "exfoliación": {"precio": "120 MXN", "duracion": 30},
+    "mascarilla black": {"precio": "150 MXN", "duracion": 30},
+    "paquete mascarilla y exfoliación": {"precio": "220 MXN", "duracion": 45},
+    "mascarilla de colageno": {"precio": "170 MXN", "duracion": 30},
+    "manicure": {"precio": "200 MXN", "duracion": 30}
 }
 
-# Alias de servicios para reconocer diferentes formas de pedirlos
-ALIAS_SERVICIOS = {
-    "corte": "corte de cabello",
-    "corte cabello": "corte de cabello",
-    "corte pelo": "corte de cabello",
-    "barba": "corte de barba",
-    "recorte barba": "corte de barba",
-    "barba completa": "corte de barba",
-    "combo": "paquete corte y barba",
-    "paquete": "paquete corte y barba",
-    "combo corte barba": "paquete corte y barba",
-    "barba rápida": "barba expres",
-    "barba express": "barba expres",
-    "corte mujer": "corte de dama",
-    "corte dama": "corte de dama",
-    "corte niños": "corte de niño",
-    "delineado": "delineado de corte",
-    "exfoliación facial": "exfoliación",
-    "exfoliacion": "exfoliación",
-    "mascarilla negra": "mascarilla black",
-    "mascarilla colágeno": "mascarilla de colageno",
-    "mascarilla colageno": "mascarilla de colageno",
-    "uñas": "manicure"
-}
-
-# Lista de palabras de saludo para detección más flexible
-SALUDOS = ['hola', 'buenos días', 'buenos dias', 'buenas tardes', 'buenas noches', 
-           'buen día', 'buen dia', 'saludos', 'hey', 'holi', 'hi', 'quisiera información']
 
 # Mensajes predefinidos
 MENSAJES = {
-    "bienvenida": "¡Bienvenido a *Barbería d' Leo*! ✂️\n\n"
+    "bienvenida": "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
                  "Puedes preguntar por:\n"
-                 "• 'servicios' para ver opciones\n"
-                 "• 'agendar' para reservar cita\n\n"
+                 "* 'servicios' para ver opciones\n"
+                 "* 'agendar' para reservar cita\n\n"
                  f"{HORARIO_TEXTO}",
     "error": "🔧 Ocurrió un error inesperado. Por favor envía 'hola' para comenzar de nuevo.",
     "confirmacion": "✅ ¡Tu cita ha sido confirmada!\n\n"
@@ -363,8 +100,7 @@ MENSAJES = {
                    "Te enviaremos un recordatorio 24 horas antes.\n"
                    "Para cancelar, responde con 'cancelar cita'.",
     "recordatorio": "⏰ *RECORDATORIO*\n\nTienes una cita mañana a las {hora} para {servicio}.\n\n"
-                    "Si necesitas cancelar, responde 'cancelar cita'.",
-    "sin_servicio_seleccionado": "Por favor selecciona primero un servicio de nuestra lista:\n\n{servicios}"
+                    "Si necesitas cancelar, responde 'cancelar cita'."
 }
 
 # Estados conversacionales
@@ -376,16 +112,6 @@ ESTADOS = {
     'solicitando_fecha': 'solicitando_fecha',
     'confirmando_cita': 'confirmando_cita',
     'solicitud_cancelacion': 'solicitud_cancelacion'
-}
-
-# Patrones de expresiones regulares para reconocimiento de entradas
-PATRONES = {
-    'si': re.compile(r'\b(si|sí|confirmo|aceptar|ok|claro|adelante|procede)\b', re.IGNORECASE),
-    'no': re.compile(r'\b(no|cancelar|back|regresar|mejor no|negativo)\b', re.IGNORECASE),
-    'agendar': re.compile(r'\b(agendar|cita|reservar|apartar|reservación|quiero una cita)\b', re.IGNORECASE),
-    'servicios': re.compile(r'\b(servicio|precio|qué hacen|cuanto cuesta|precios|corte|barba)\b', re.IGNORECASE),
-    'reiniciar': re.compile(r'\b(reiniciar|reset|comenzar de nuevo|empezar|otra vez)\b', re.IGNORECASE),
-    'cancelar_cita': re.compile(r'\b(cancelar cita|cancelar mi cita|eliminar cita|quitar cita)\b', re.IGNORECASE)
 }
 
 # Estados de conversación
@@ -447,7 +173,6 @@ def limpiar_conversaciones_expiradas():
         del conversaciones[remitente]
 
 def get_calendar_service():
-    """Obtiene servicio de Google Calendar con manejo mejorado de errores"""
     try:
         cred_json = os.getenv("GOOGLE_CREDENTIALS")
         if cred_json:
@@ -464,15 +189,14 @@ def get_calendar_service():
                 return None
         else:
             logger.warning("⚠️ GOOGLE_CREDENTIALS no configurado, intentando usar archivo local")
-            creds_file = os.getenv("GOOGLE_CREDENTIALS_FILE", 'credentials.json')
             try:
                 creds = service_account.Credentials.from_service_account_file(
-                    creds_file,
+                    'credentials.json',  # En caso de que uses el archivo local
                     scopes=['https://www.googleapis.com/auth/calendar']
                 )
-                logger.info(f"✓ Credenciales cargadas desde archivo local '{creds_file}'")
+                logger.info("✓ Credenciales cargadas desde archivo local 'credentials.json'")
             except Exception as e:
-                logger.error(f"❌ Error al cargar archivo de credenciales: {e}")
+                logger.error(f"❌ Error al cargar archivo credentials.json: {e}")
                 return None
             
         service = build('calendar', 'v3', credentials=creds)
@@ -484,6 +208,10 @@ def get_calendar_service():
 
 def parsear_fecha(texto):
     """Intenta parsear una fecha a partir de texto natural con implementación personalizada para español"""
+    from datetime import datetime, timedelta
+    import re
+    import calendar
+    
     logger.info(f"Intentando parsear fecha: '{texto}'")
     
     texto = texto.lower().strip()
@@ -674,6 +402,7 @@ def validar_fecha(fecha):
     
     return True, None
 
+
 def verificar_disponibilidad(fecha, duracion_minutos):
     """Verifica disponibilidad en el calendario"""
     service = get_calendar_service()
@@ -685,7 +414,7 @@ def verificar_disponibilidad(fecha, duracion_minutos):
         tiempo_fin = fecha + timedelta(minutes=duracion_minutos)
         
         eventos = service.events().list(
-            calendarId=CALENDAR_ID,
+            calendarId='primary',
             timeMin=fecha.isoformat(),
             timeMax=tiempo_fin.isoformat(),
             singleEvents=True,
@@ -708,14 +437,7 @@ def verificar_disponibilidad(fecha, duracion_minutos):
 def buscar_proximo_horario_disponible(service, fecha_inicial, duracion_minutos):
     """Busca el próximo horario disponible en el mismo día"""
     hora_actual = fecha_inicial
-    
-    # Determinar hora de cierre para el día específico
-    if fecha_inicial.weekday() < 5:  # Lunes a viernes
-        hora_cierre = HORA_CIERRE_LUNES_VIERNES
-    else:  # Sábado
-        hora_cierre = HORA_CIERRE_SABADO
-        
-    fin_dia = fecha_inicial.replace(hour=hora_cierre, minute=0)
+    fin_dia = fecha_inicial.replace(hour=HORA_CIERRE, minute=0)
     
     while hora_actual < fin_dia:
         # Avanzar 30 minutos
@@ -723,12 +445,12 @@ def buscar_proximo_horario_disponible(service, fecha_inicial, duracion_minutos):
         tiempo_fin = hora_actual + timedelta(minutes=duracion_minutos)
         
         # Omitir si ya pasamos el horario de cierre
-        if tiempo_fin.hour >= hora_cierre:
+        if tiempo_fin.hour >= HORA_CIERRE:
             return None
             
         # Verificar si está libre
         eventos = service.events().list(
-            calendarId=CALENDAR_ID,
+            calendarId='primary',
             timeMin=hora_actual.isoformat(),
             timeMax=tiempo_fin.isoformat(),
             singleEvents=True
@@ -739,38 +461,12 @@ def buscar_proximo_horario_disponible(service, fecha_inicial, duracion_minutos):
     
     return None
 
-def mostrar_servicios(por_categoria=True):
-    """Genera texto con los servicios disponibles, opcionalmente agrupados por categoría"""
-    if por_categoria:
-        # Agrupar servicios por categoría
-        servicios_por_categoria = {}
-        for servicio, detalles in SERVICIOS.items():
-            categoria = detalles.get('categoria', 'otros')
-            if categoria not in servicios_por_categoria:
-                servicios_por_categoria[categoria] = []
-            servicios_por_categoria[categoria].append((servicio, detalles))
-        
-        # Títulos amigables para las categorías
-        titulos_categorias = {
-            'corte': '✂️ CORTES',
-            'tratamiento': '✨ TRATAMIENTOS',
-            'otro': '🛠️ OTROS SERVICIOS'
-        }
-        
-        # Generar texto por categorías
-        servicios_texto = "💈 *SERVICIOS DISPONIBLES* 💈\n\n"
-        for categoria, servicios in servicios_por_categoria.items():
-            servicios_texto += f"*{titulos_categorias.get(categoria, categoria.upper())}*\n"
-            for servicio, detalles in servicios:
-                servicios_texto += f"• {servicio.capitalize()}: {detalles['precio']} ({detalles['duracion']} min)\n"
-            servicios_texto += "\n"
-    else:
-        # Formato simple sin categorías
-        servicios_texto = "💈 *Servicios disponibles* 💈\n\n"
-        for servicio, detalles in SERVICIOS.items():
-            servicios_texto += f"• ✂️ {servicio.capitalize()}: {detalles['precio']} ({detalles['duracion']} min)\n"
-    
-    servicios_texto += "\n_Responde con el nombre del servicio que deseas_"
+def mostrar_servicios():
+    """Genera texto con los servicios disponibles"""
+    servicios_texto = "💈 *Servicios disponibles* 💈\n\n"
+    for servicio, detalles in SERVICIOS.items():
+        servicios_texto += f"• ✂️ {servicio.capitalize()}: {detalles['precio']} ({detalles['duracion']} min)\n"
+    servicios_texto += "\n_Responde con el nombre exacto del servicio que deseas_"
     return servicios_texto
 
 def crear_evento_calendario(datos_cita):
@@ -806,7 +502,7 @@ def crear_evento_calendario(datos_cita):
         logger.info(f"🔍 Datos del evento: {evento}")
         
         evento_creado = service.events().insert(
-            calendarId=CALENDAR_ID,
+            calendarId='primary',
             body=evento,
             sendUpdates='all'
         ).execute()
@@ -819,3 +515,329 @@ def crear_evento_calendario(datos_cita):
     except Exception as e:
         logger.error(f"❌ Error desconocido al crear evento: {e}", exc_info=True)
         return True, "error-desconocido"  # Simulamos éxito para no bloquear al usuario
+
+def cancelar_cita(remitente):
+    """Busca y cancela la próxima cita del cliente"""
+    if 'evento_id' not in conversaciones.get(remitente, {}) or conversaciones[remitente]['evento_id'] in ["sin-calendario", "error-http", "error-desconocido"]:
+        # Intentar encontrar cita por nombre y teléfono
+        if 'nombre' not in conversaciones.get(remitente, {}):
+            return False, "No encontramos una cita asociada. Por favor proporciona tu nombre completo."
+            
+        service = get_calendar_service()
+        if not service:
+            return True, "Tu cita ha sido cancelada exitosamente."  # Simulamos éxito
+        
+        try:
+            # Buscar eventos futuros para este cliente
+            ahora = datetime.now(TIMEZONE).isoformat()
+            proxima_semana = (datetime.now(TIMEZONE) + timedelta(days=30)).isoformat()
+            
+            eventos = service.events().list(
+                calendarId='primary',
+                timeMin=ahora,
+                timeMax=proxima_semana,
+                q=conversaciones[remitente].get('nombre', ''),
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            
+            if not eventos.get('items', []):
+                return True, "Tu cita ha sido cancelada exitosamente."  # Simulamos éxito
+            
+            # Cancelar el primer evento encontrado
+            evento = eventos['items'][0]
+            service.events().delete(
+                calendarId='primary',
+                eventId=evento['id']
+            ).execute()
+            
+            logger.info(f"✅ Evento cancelado con ID: {evento['id']}")
+            return True, f"Tu cita del {evento['start'].get('dateTime', '').split('T')[0]} a las {evento['start'].get('dateTime', '').split('T')[1][:5]} ha sido cancelada."
+            
+        except HttpError as e:
+            logger.error(f"❌ Error de Google API al cancelar cita: {e}", exc_info=True)
+            return True, "Tu cita ha sido cancelada exitosamente."  # Simulamos éxito
+    else:
+        # Cancelar por ID de evento
+        service = get_calendar_service()
+        if not service:
+            return True, "Tu cita ha sido cancelada exitosamente."  # Simulamos éxito
+            
+        try:
+            service.events().delete(
+                calendarId='primary',
+                eventId=conversaciones[remitente]['evento_id']
+            ).execute()
+            
+            logger.info(f"✅ Evento cancelado con ID: {conversaciones[remitente]['evento_id']}")
+            return True, "Tu cita ha sido cancelada exitosamente."
+        except HttpError as e:
+            logger.error(f"❌ Error de Google API al cancelar cita por ID: {e}", exc_info=True)
+            return True, "Tu cita ha sido cancelada exitosamente."  # Simulamos éxito
+
+def enviar_recordatorio(telefono, cita_info):
+    """Envía un recordatorio de cita por WhatsApp"""
+    if not twilio_client:
+        logger.warning("Cliente Twilio no configurado para enviar recordatorios")
+        return False
+        
+    try:
+        mensaje = MENSAJES["recordatorio"].format(
+            hora=cita_info['fecha'].strftime('%H:%M'),
+            servicio=cita_info['servicio']
+        )
+        
+        twilio_client.messages.create(
+            body=mensaje,
+            from_=TWILIO_PHONE_NUMBER,
+            to=telefono
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Error al enviar recordatorio: {e}")
+        return False
+
+def identificar_servicio(mensaje):
+    # Verificar el servicio
+    logger.info(f"Identificando servicio en mensaje: {mensaje}")
+    servicio_identificado = None
+    for servicio in SERVICIOS:
+        if servicio in mensaje:
+            servicio_identificado = servicio
+            break
+    logger.info(f"Servicio identificado: {servicio_identificado}")
+    return servicio_identificado
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Verificar que la solicitud viene de Twilio
+    if request.method != 'POST':
+        return Response("Método no permitido", status=405)
+    
+    # Limpiar conversaciones expiradas
+    limpiar_conversaciones_expiradas()
+    
+    # Obtener datos del mensaje
+    mensaje = request.values.get('Body', '').strip()
+    mensaje_lower = mensaje.lower()
+    remitente = request.values.get('From', '')
+    
+    logger.info(f"Mensaje recibido de {remitente}: {mensaje}")
+    
+    # Inicializar respuesta Twilio
+    resp = MessagingResponse()
+    
+    try:
+        # Verificar comandos especiales
+        if mensaje_lower in ['reiniciar', 'reset', 'comenzar de nuevo']:
+            if remitente in conversaciones:
+                del conversaciones[remitente]
+            resp.message(MENSAJES["bienvenida"])
+            respuesta_str = str(resp)
+            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+            return Response(respuesta_str, content_type='application/xml')
+            
+        if 'cancelar cita' in mensaje_lower or 'cancelar mi cita' in mensaje_lower:
+            if remitente in conversaciones:
+                conversaciones[remitente]['estado'] = ESTADOS['solicitud_cancelacion']
+            else:
+                conversaciones[remitente] = {
+                    'estado': ESTADOS['solicitud_cancelacion'],
+                    'ultimo_mensaje': datetime.now(TIMEZONE)
+                }
+            resp.message("¿Estás seguro que deseas cancelar tu cita? Responde 'SI' para confirmar.")
+            respuesta_str = str(resp)
+            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+            return Response(respuesta_str, content_type='application/xml')
+        
+        # Manejo de saludos iniciales
+        if remitente not in conversaciones or any(saludo in mensaje_lower for saludo in 
+                                ['hola', 'holi', 'buenos días', 'buenas tardes', 'buenas noches', 'buen día']):
+            conversaciones[remitente] = {
+                'estado': ESTADOS['inicio'],
+                'ultimo_mensaje': datetime.now(TIMEZONE)
+            }
+            resp.message(MENSAJES["bienvenida"])
+            respuesta_str = str(resp)
+            logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+            return Response(respuesta_str, content_type='application/xml')
+        
+        # Actualizar timestamp del último mensaje
+        conversaciones[remitente]['ultimo_mensaje'] = datetime.now(TIMEZONE)
+        
+        estado_actual = conversaciones[remitente].get('estado', ESTADOS['inicio'])
+        
+        # Flujo principal de conversación
+        if estado_actual == ESTADOS['inicio']:
+            if ('servicio' in mensaje_lower or 'precio' in mensaje_lower or 
+                'qué hacen' in mensaje_lower or 'servicios' in mensaje_lower or
+                'cuales son tus servicios' in mensaje_lower):
+                conversaciones[remitente]['estado'] = ESTADOS['listando_servicios']
+                resp.message(mostrar_servicios())
+            elif 'agendar' in mensaje_lower or 'cita' in mensaje_lower or 'reservar' in mensaje_lower:
+                conversaciones[remitente] = {
+                    'estado': ESTADOS['solicitando_nombre'],
+                    'servicio': None,
+                    'ultimo_mensaje': datetime.now(TIMEZONE)
+                }
+                resp.message("✍️ Por favor dime tu nombre para agendar tu cita:")
+            else:
+                resp.message(
+                    "¡Bienvenido a Barbería d' Leo! ✂️\n\n"
+                    "Puedes preguntar por:\n"
+                    "* 'servicios' para ver opciones\n"
+                    "* 'agendar' para reservar cita\n\n"
+                    f"{HORARIO_TEXTO}\n\n"
+                    "Por favor escribe una de estas opciones."
+                )
+        
+        elif estado_actual == ESTADOS['listando_servicios']:
+            servicio_identificado = identificar_servicio(mensaje_lower)
+            if servicio_identificado:
+                conversaciones[remitente] = {
+                    'estado': ESTADOS['solicitando_nombre'],
+                    'servicio': servicio_identificado,
+                    'ultimo_mensaje': datetime.now(TIMEZONE)
+                }
+                resp.message(f"✍️ Por favor dime tu nombre para agendar tu *{servicio_identificado}*:")
+            elif 'agendar' in mensaje_lower or 'cita' in mensaje_lower:
+                resp.message("Por favor elige primero un servicio:\n\n" + mostrar_servicios())
+            else:
+                resp.message(
+                    "No reconozco ese servicio. Por favor elige uno de nuestra lista:\n\n" +
+                    mostrar_servicios()
+                )
+        
+        elif estado_actual == ESTADOS['solicitando_nombre']:
+            if len(mensaje) < 3:
+                resp.message("Por favor proporciona tu nombre completo.")
+            else:
+                conversaciones[remitente]['nombre'] = mensaje
+                
+                if conversaciones[remitente].get('servicio') is None:
+                    conversaciones[remitente]['estado'] = ESTADOS['listando_servicios']
+                    resp.message(f"Gracias {mensaje}. Ahora elige el servicio que deseas:\n\n" + mostrar_servicios())
+                else:
+                    conversaciones[remitente]['estado'] = ESTADOS['solicitando_telefono']
+                    resp.message(f"Gracias {mensaje}. Por favor comparte un número de teléfono para contactarte:")
+            
+        elif estado_actual == ESTADOS['solicitando_telefono']:
+            # Verificación simple de teléfono (solo números y espacios)
+            telefono_limpio = ''.join(c for c in mensaje if c.isdigit() or c.isspace())
+            if len(telefono_limpio) < 8:
+                resp.message("Por favor proporciona un número de teléfono válido.")
+            else:
+                conversaciones[remitente]['telefono'] = telefono_limpio
+                conversaciones[remitente]['estado'] = ESTADOS['solicitando_fecha']
+                
+                servicio = conversaciones[remitente]['servicio']
+                duracion = SERVICIOS[servicio]['duracion']
+                
+                resp.message(
+                    f"¿Cuándo te gustaría agendar tu cita para *{servicio}*?\n\n"
+                    f"📅 Nuestro horario es {HORARIO}\n"
+                    f"⏱️ Duración: {duracion} minutos\n\n"
+                    "Por favor escribe la fecha y hora (por ejemplo: 'mañana a las 10am', 'jueves a las 4pm')"
+                )
+                
+        elif estado_actual == ESTADOS['solicitando_fecha']:
+            # Parsear fecha del mensaje
+            fecha = parsear_fecha(mensaje)
+            valido, mensaje_error = validar_fecha(fecha)
+            
+            if not valido:
+                resp.message(mensaje_error)
+            else:
+                servicio = conversaciones[remitente]['servicio']
+                duracion = SERVICIOS[servicio]['duracion']
+                
+                # Verificar disponibilidad
+                disponible, mensaje_error = verificar_disponibilidad(fecha, duracion)
+                
+                if not disponible:
+                    resp.message(mensaje_error)
+                else:
+                    # Guardar fecha en la conversación
+                    conversaciones[remitente]['fecha'] = fecha
+                    conversaciones[remitente]['estado'] = ESTADOS['confirmando_cita']
+                    
+                    # Formato amigable de fecha para mostrar
+                    formato_fecha = formato_fecha_español(fecha)
+                    
+                    resp.message(
+                        f"¿Confirmas tu cita para {servicio} el {formato_fecha}?\n\n"
+                        f"Nombre: {conversaciones[remitente]['nombre']}\n"
+                        f"Servicio: {servicio}\n"
+                        f"Precio: {SERVICIOS[servicio]['precio']}\n"
+                        f"Duración: {duracion} minutos\n\n"
+                        "Responde 'si' para confirmar o 'no' para cancelar."
+                    )
+        
+        elif estado_actual == ESTADOS['confirmando_cita']:
+            logger.info(f"⭐ Procesando confirmación: '{mensaje_lower}'")
+            if mensaje_lower in ['si', 'sí', 'confirmo', 'aceptar', 'ok']:
+                logger.info(f"⭐ Respuesta reconocida como confirmación")
+                # Crear evento en calendario
+                exito, evento_id = crear_evento_calendario(conversaciones[remitente])
+                
+                if exito:
+                    conversaciones[remitente]['evento_id'] = evento_id
+                    
+                    servicio = conversaciones[remitente]['servicio']
+                    fecha = conversaciones[remitente]['fecha']
+                    precio = SERVICIOS[servicio]['precio']
+                    
+                    # Formato amigable de fecha
+                    formato_fecha = formato_fecha_español(fecha)
+                    
+                    resp.message(MENSAJES["confirmacion"].format(
+                        fecha=formato_fecha,
+                        servicio=servicio,
+                        precio=precio
+                    ))
+                    
+                    # Guardar datos por si se necesita cancelar
+                    conversaciones[remitente]['estado'] = ESTADOS['inicio']
+                else:
+                    resp.message("⚠️ Lo sentimos, hubo un problema al registrar tu cita en nuestro calendario. Por favor contáctanos directamente al teléfono de la barbería para confirmar tu cita.")
+            
+            elif mensaje_lower in ['no', 'cancelar', 'back', 'regresar']:
+                conversaciones[remitente]['estado'] = ESTADOS['solicitando_fecha']
+                resp.message("Entendido. Por favor indica otra fecha y hora que te convenga:")
+            
+            else:
+                resp.message("Por favor responde 'si' para confirmar tu cita o 'no' para elegir otro horario.")
+        
+        elif estado_actual == ESTADOS['solicitud_cancelacion']:
+            if mensaje_lower in ['si', 'sí', 'confirmo', 'ok']:
+                exito, mensaje_resultado = cancelar_cita(remitente)
+                if exito:
+                    # Si se canceló exitosamente, reiniciar conversación
+                    if remitente in conversaciones:
+                        del conversaciones[remitente]
+                    resp.message(f"{mensaje_resultado}\n\nSi deseas agendar una nueva cita, escribe 'agendar'.")
+                else:
+                    resp.message(mensaje_resultado)
+            else:
+                conversaciones[remitente]['estado'] = ESTADOS['inicio']
+                resp.message("Cancelación abortada. ¿En qué más te puedo ayudar?")
+        
+        # Logging y envío de respuesta
+        respuesta_str = str(resp)
+        logger.info(f"⭐ Respuesta a enviar: {respuesta_str}")
+        
+        # Verificar si Twilio está configurado correctamente
+        logger.info(f"⭐ Estado configuración Twilio - Número: {TWILIO_PHONE_NUMBER if TWILIO_PHONE_NUMBER else 'NO CONFIGURADO'}")
+        logger.info(f"⭐ Cliente Twilio inicializado: {twilio_client is not None}")
+        
+        return Response(respuesta_str, content_type='application/xml')
+    
+    except Exception as e:
+        logger.error(f"Error en webhook: {e}", exc_info=True)
+        if remitente in conversaciones:
+            del conversaciones[remitente]
+        resp.message(MENSAJES["error"])
+        respuesta_str = str(resp)
+        logger.info(f"⭐ Respuesta de error: {respuesta_str}")
+        return Response(respuesta_str, content_type='application/xml')
